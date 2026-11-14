@@ -126,6 +126,8 @@ namespace SparkLoad.Analyzer
         public readonly Dictionary<long, Series> ProcIo = new Dictionary<long, Series>();
         public readonly Dictionary<long, Series> ProcCpu = new Dictionary<long, Series>();
         public int Rows;
+        /// <summary>Process names from the P rows of samples.csv, by pid.</summary>
+        public readonly Dictionary<long, string> ProcNames = new Dictionary<long, string>();
 
         public string NameOf(int tid) => Cpu.TryGetValue(tid, out var s) ? s.Name : "";
 
@@ -177,6 +179,8 @@ namespace SparkLoad.Analyzer
                     if (t > set.MaxT) set.MaxT = t;
                     if (kind == "P")
                     {
+                        string pn = G(iName);
+                        if (pn.Length > 0) set.ProcNames[pid] = pn;
                         if (!set.ProcIo.TryGetValue(pid, out var io)) { io = new Series(); set.ProcIo[pid] = io; }
                         if (!set.ProcCpu.TryGetValue(pid, out var pc)) { pc = new Series(); set.ProcCpu[pid] = pc; }
                         io.T.Add(t); io.V.Add(Num.D(G(iRd)) + Num.D(G(iWr)) + Num.D(G(iOt)));
@@ -208,6 +212,14 @@ namespace SparkLoad.Analyzer
             }
             return set;
         }
+    }
+
+    internal readonly struct SignalInfo
+    {
+        public readonly string Marker;
+        public readonly bool Begin;
+        public readonly int Tid;
+        public SignalInfo(string marker, bool begin, int tid) { Marker = marker; Begin = begin; Tid = tid; }
     }
 
     internal sealed class MarkerEv
@@ -369,6 +381,10 @@ namespace SparkLoad.Analyzer
         public readonly SeqTracker Seqs = new SeqTracker();
         /// <summary>Times of all marker events, thinned: points between neighbours at most SilenceGapMs apart are dropped, which keeps every silence.</summary>
         public readonly List<double> MarkerSignal = new List<double>();
+        /// <summary>What each MarkerSignal point is (parallel list), so a silence can name the marker event on either side.</summary>
+        public readonly List<SignalInfo> MarkerSignalInfo = new List<SignalInfo>();
+        /// <summary>Managed thread id by OS tid, from Thread events (also for threads without a name).</summary>
+        public readonly Dictionary<int, int> ThreadManagedIds = new Dictionary<int, int>();
         public readonly List<Span> RetainedLoadSpans = new List<Span>();
         public readonly LoadFold Fold = new LoadFold();
         /// <summary>Hook-side suppressed column.load calls: last Stats value per (x, z).</summary>
@@ -382,11 +398,11 @@ namespace SparkLoad.Analyzer
 
         // Marker time signal for the silence scan. Events arrive in time order. When the previous-but-one point is
         // within SilenceGapMs of the new one, the previous point cannot start or end a silence, so it is replaced.
-        private static void AddSignal(List<double> l, double t)
+        private static void AddSignal(List<double> l, List<SignalInfo> info, double t, SignalInfo what)
         {
             int n = l.Count;
-            if (n >= 2 && t - l[n - 2] <= Result.SilenceGapMs) l[n - 1] = t;
-            else l.Add(t);
+            if (n >= 2 && t - l[n - 2] <= Result.SilenceGapMs) { l[n - 1] = t; info[n - 1] = what; }
+            else { l.Add(t); info.Add(what); }
         }
 
         // Streaming pairing of column.load Begin/End per thread. A span stays individual when it is among the first
@@ -478,7 +494,8 @@ namespace SparkLoad.Analyzer
                                         string ms = J.Str(f, "s");
                                         ev.MarkerEventCount++;
                                         ev.Seqs.Add(tid, seq);
-                                        AddSignal(ev.MarkerSignal, t);
+                                        string sigName = mk.Length > 0 ? mk : (ev.MarkerNames.TryGetValue(mid, out var sn) ? sn : "marker#" + mid.ToString(CultureInfo.InvariantCulture));
+                                        AddSignal(ev.MarkerSignal, ev.MarkerSignalInfo, t, new SignalInfo(sigName, isBegin, tid));
                                         if (mk == "column.load" || (mk.Length == 0 && loadMarkerId >= 0 && mid == loadMarkerId))
                                         {
                                             FoldLoad(ev, loadStacks, loadSeen, isBegin, t, tid, seq, ma, mb, mc, ms);
@@ -492,7 +509,12 @@ namespace SparkLoad.Analyzer
                                         break;
                                     }
                                 case "Thread":
-                                    ev.ThreadNames[(int)(J.Long(f, "tid") ?? 0)] = J.Str(f, "name");
+                                    {
+                                        int ttid = (int)(J.Long(f, "tid") ?? 0);
+                                        ev.ThreadNames[ttid] = J.Str(f, "name");
+                                        long tmid = J.Long(f, "managedId") ?? 0;
+                                        if (tmid > 0) ev.ThreadManagedIds[ttid] = (int)tmid;
+                                    }
                                     break;
                                 case "Patch":
                                     ev.Patches.Add(new PatchEv { T = t, Marker = J.Str(f, "marker"), Target = J.Str(f, "target"), Status = J.Str(f, "status"), Detail = J.Str(f, "detail") });

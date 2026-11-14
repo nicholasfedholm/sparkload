@@ -11,7 +11,8 @@ namespace SparkLoad.Analyzer
     {
         public static readonly string[] CsvColumns =
         {
-            "run_id", "arm", "t_start_ms", "t_end_ms", "dur_ms", "side", "thread", "phase", "subphase", "mod", "x", "z", "pass", "count", "bytes", "source", "lost"
+            "run_id", "arm", "t_start_ms", "t_end_ms", "dur_ms", "side", "thread", "phase", "subphase", "mod", "x", "z", "pass", "count", "bytes", "source", "lost",
+            "name_source", "named", "cause"
         };
 
         // ---------- markdown ----------
@@ -183,17 +184,51 @@ namespace SparkLoad.Analyzer
         {
             sb.AppendLine("## Silences").AppendLine();
             sb.AppendLine("Every gap over 2 s between consecutive signals (hook marker events, frame events, tailed log lines; process start counts as a signal).").AppendLine();
-            if (r.Silences.Count == 0) { sb.AppendLine("none").AppendLine(); return; }
-            Table(sb, new[] { "start s", "end s", "gap s", "when", "top thread", "cpu s", "process io bytes", "gc pause ms", "verdict" },
+            if (r.Silences.Count == 0) { sb.AppendLine("none").AppendLine(); UnnamedSilences(sb, r); return; }
+            Table(sb, new[] { "start s", "end s", "gap s", "when", "top thread", "cpu s", "process io bytes", "gc pause ms", "verdict", "name source", "status" },
                 r.Silences.Select(s => new[]
                 {
                     Txt.Sec(s.T0), Txt.Sec(s.T1), Txt.Sec(s.Dur), s.Pre ? "before finalize" : "after finalize",
-                    s.HasSamples ? (s.TopName.Length > 0 ? s.TopName : "(unnamed)") + " tid " + s.TopTid : Txt.Na,
+                    s.HasSamples ? (s.TopCpuMs <= 0 ? "(no cpu in gap)" : (s.TopName.Length > 0 ? s.TopName : "(unnamed)") + " tid " + s.TopTid) : Txt.Na,
                     s.HasSamples ? Txt.Sec(s.TopCpuMs) : Txt.Na,
                     s.HasSamples ? Txt.F0(s.IoBytes) : Txt.Na,
                     s.HasSamples && r.D.Ev.FilePresent ? Txt.F1(s.GcPauseMs) : Txt.Na,
                     s.Verdict,
+                    s.HasSamples ? s.NameSource : Txt.Na,
+                    s.Named ? "named" : "UNNAMED (" + s.Cause + ")",
                 }));
+            sb.AppendLine("name source: samples (samples.csv thread name), thread_event (runtime Thread event), process (thread of another process, named by its process), main_thread (marker or frame events identify it as the main thread), marker_span (thread without a name, labelled by the marker span it ran during the gap), none. Named needs the top thread to use at least 25 percent of the gap in CPU and a name from any source; the thresholds are unchanged.").AppendLine();
+            UnnamedSilences(sb, r);
+        }
+
+        private static void UnnamedSilences(StringBuilder sb, Result r)
+        {
+            sb.AppendLine("## Unnamed silences").AppendLine();
+            var un = r.Silences.Where(s => !s.Named).ToList();
+            if (un.Count == 0) { sb.AppendLine("none: every silence over 2 s has a named top thread.").AppendLine(); return; }
+            sb.AppendLine("Silences still without a name (" + un.Count + "). Causes: no_thread_name (top thread used at least 25 percent of the gap but has no name from any source), low_cpu_share (top thread used less than 25 percent and no io or gc explains the gap), idle_or_io (no cpu, or process io or gc pause explains it). Nearest events are the last and first known event on the top thread, and the signals that bound the gap globally.").AppendLine();
+            foreach (var s in un)
+            {
+                sb.AppendLine("### " + Txt.Sec(s.T0) + " s to " + Txt.Sec(s.T1) + " s (" + Txt.Sec(s.Dur) + " s, " + (s.Pre ? "before finalize" : "after finalize") + ")").AppendLine();
+                if (!s.HasSamples)
+                {
+                    sb.AppendLine("- cause: no_samples (samples.csv is absent, so no thread can be attributed)");
+                }
+                else
+                {
+                    sb.AppendLine("- cause: " + s.Cause + " (verdict: " + s.Verdict + ")");
+                    if (s.TopCpuMs <= 0) sb.AppendLine("- thread: none (no thread used cpu in the gap)");
+                    else sb.AppendLine("- thread: tid " + s.TopTid + (s.TopName.Length > 0 ? ", name " + s.TopName + " (" + s.NameSource + ")" : ", no name known"));
+                    sb.AppendLine("- top thread cpu: " + Txt.Sec(s.TopCpuMs) + " s of " + Txt.Sec(s.Dur) + " s (" + Txt.Pct(100.0 * s.TopShare) + "), all processes cpu " + Txt.Sec(s.ProcCpuMs) + " s, process io " + Txt.F0(s.IoBytes) + " bytes, gc pause " + Txt.F1(s.GcPauseMs) + " ms");
+                    if (s.TopThreads.Length > 0) sb.AppendLine("- top threads by cpu: " + s.TopThreads);
+                    if (s.OpenSpans.Length > 0) sb.AppendLine("- marker spans open in the gap: " + s.OpenSpans);
+                    sb.AppendLine("- nearest event on thread before: " + s.ThreadBefore);
+                    sb.AppendLine("- nearest event on thread after: " + s.ThreadAfter);
+                }
+                sb.AppendLine("- nearest event global before: " + s.GlobalBefore);
+                sb.AppendLine("- nearest event global after: " + s.GlobalAfter);
+                sb.AppendLine();
+            }
         }
 
         private static void Gc(StringBuilder sb, Result r)
@@ -350,11 +385,12 @@ namespace SparkLoad.Analyzer
             int ord = 0;
             string lostTotal = r.D.Ev.HasMarkers ? Txt.I(r.Lost) : "";
 
-            string Row(double t0, double t1, string side, string thread, string phase, string sub, string mod, string x, string z, string pass, string count, string bytes, string source, string lost) =>
+            string Row(double t0, double t1, string side, string thread, string phase, string sub, string mod, string x, string z, string pass, string count, string bytes, string source, string lost, string nameSource = "", string named = "", string cause = "") =>
                 string.Join(",", new[]
                 {
                     Txt.Csv(d.Info.RunId), Txt.Csv(d.Info.Arm), Txt.F3(t0), Txt.F3(t1), Txt.F3(Math.Max(0, t1 - t0)),
                     Txt.Csv(side), Txt.Csv(thread), Txt.Csv(phase), Txt.Csv(sub), Txt.Csv(mod), x, z, pass, count, bytes, Txt.Csv(source), lost,
+                    Txt.Csv(nameSource), named, Txt.Csv(cause),
                 });
 
             string first = Row(0, d.EndMs, "", "", "process", "", "", "", "", "", "", "", d.Ev.HasMarkers ? "marker" : "log", lostTotal);
@@ -383,7 +419,8 @@ namespace SparkLoad.Analyzer
             foreach (var p in d.Ev.Pauses)
                 rows.Add((p.T0, ord++, Row(p.T0, p.T1, "process", "", "gc", p.Gen >= 0 ? "pause gen" + p.Gen : "pause", "", "", "", "", "", "", "marker", "")));
             foreach (var s in r.Silences)
-                rows.Add((s.T0, ord++, Row(s.T0, s.T1, "", s.HasSamples ? (s.TopName.Length > 0 ? s.TopName : "") + "#" + s.TopTid : "", "silence", s.Verdict, "", "", "", "", "", s.HasSamples ? Txt.F0(s.IoBytes) : "", s.HasSamples ? "sample" : "log", "")));
+                rows.Add((s.T0, ord++, Row(s.T0, s.T1, "", s.HasSamples ? (s.TopName.Length > 0 ? s.TopName : "") + "#" + s.TopTid : "", "silence", s.Verdict, "", "", "", "", "", s.HasSamples ? Txt.F0(s.IoBytes) : "", s.HasSamples ? "sample" : "log", "",
+                    s.HasSamples ? s.NameSource : "", s.HasSamples ? (s.Named ? "1" : "0") : "", s.Cause)));
 
             var sb = new StringBuilder();
             sb.AppendLine(string.Join(",", CsvColumns));

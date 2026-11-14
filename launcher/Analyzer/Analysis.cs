@@ -69,6 +69,14 @@ namespace SparkLoad.Analyzer
         public string Verdict = "";
         public bool Named;
         public double Dur => T1 - T0;
+        /// <summary>Where the top thread's name came from: samples, thread_event, process, main_thread, marker_span, or none.</summary>
+        public string NameSource = "none";
+        /// <summary>Why the silence is not named: no_thread_name, low_cpu_share, idle_or_io (or no_samples). Empty when named.</summary>
+        public string Cause = "";
+        public double TopShare;
+        public string ThreadBefore = "", ThreadAfter = "", GlobalBefore = "", GlobalAfter = "";
+        public string TopThreads = "", OpenSpans = "";
+        public double ProcCpuMs;
     }
 
     internal sealed class CoverageResult
@@ -394,40 +402,133 @@ namespace SparkLoad.Analyzer
         private void BuildSilences()
         {
             var ev = D.Ev;
-            var sig = new List<double> { 0 };
-            sig.AddRange(ev.MarkerSignal);
-            sig.AddRange(ev.Frames.Select(f => f.T));
-            sig.AddRange(ev.FrameAggs.Select(f => f.T));
-            sig.AddRange(ev.Playables.Select(f => f.T));
-            sig.AddRange(D.Logs.Select(l => l.T));
-            sig.Sort();
+            // Signal points: (time, kind, index). The marker signal is thinned, so it keeps what each point is.
+            var sig = new List<(double T, int Kind, int Idx)> { (0, 0, 0) };
+            for (int i = 0; i < ev.MarkerSignal.Count; i++) sig.Add((ev.MarkerSignal[i], 1, i));
+            for (int i = 0; i < ev.Frames.Count; i++) sig.Add((ev.Frames[i].T, 2, i));
+            for (int i = 0; i < ev.FrameAggs.Count; i++) sig.Add((ev.FrameAggs[i].T, 3, i));
+            for (int i = 0; i < ev.Playables.Count; i++) sig.Add((ev.Playables[i].T, 4, i));
+            for (int i = 0; i < D.Logs.Count; i++) sig.Add((D.Logs[i].T, 5, i));
+            var sorted = sig.OrderBy(x => x.T).ToList();
             double? fin = RefFinalizeMs;
-            for (int i = 1; i < sig.Count; i++)
+            for (int i = 1; i < sorted.Count; i++)
             {
-                double gap = sig[i] - sig[i - 1];
+                double gap = sorted[i].T - sorted[i - 1].T;
                 if (gap <= SilenceGapMs) continue;
-                var s = new Silence { T0 = sig[i - 1], T1 = sig[i], Pre = !fin.HasValue || sig[i - 1] < fin.Value, HasSamples = D.Samples.Present };
+                var s = new Silence { T0 = sorted[i - 1].T, T1 = sorted[i].T, Pre = !fin.HasValue || sorted[i - 1].T < fin.Value, HasSamples = D.Samples.Present };
+                s.GlobalBefore = SignalLabel(sorted[i - 1].Kind, sorted[i - 1].Idx, sorted[i - 1].T);
+                s.GlobalAfter = SignalLabel(sorted[i].Kind, sorted[i].Idx, sorted[i].T);
                 Attribute(s);
                 Silences.Add(s);
             }
         }
 
+        private string SignalLabel(int kind, int idx, double t)
+        {
+            string what;
+            switch (kind)
+            {
+                case 0: what = "process start"; break;
+                case 1:
+                    {
+                        var si = D.Ev.MarkerSignalInfo[idx];
+                        what = (si.Begin ? "Begin " : "End ") + si.Marker + " (tid " + Txt.I(si.Tid) + ")";
+                        break;
+                    }
+                case 2: what = "frame event (tid " + Txt.I(D.Ev.Frames[idx].Tid) + ")"; break;
+                case 3: what = "frame aggregate (tid " + Txt.I(D.Ev.FrameAggs[idx].Tid) + ")"; break;
+                case 4: what = "playable (tid " + Txt.I(D.Ev.Playables[idx].Tid) + ")"; break;
+                default:
+                    {
+                        var l = D.Logs[idx];
+                        string text = Txt.Clean(l.Text).Replace('|', '/').Replace('\r', ' ').Replace('\n', ' ');
+                        if (text.Length > 70) text = text.Substring(0, 70) + "...";
+                        what = "log " + l.File + ": " + text;
+                        break;
+                    }
+            }
+            return what + " at " + Txt.Sec(t) + " s";
+        }
+
+        /// <summary>
+        /// Name for a thread. Order: samples.csv name, runtime Thread event name, process name for a thread of another process,
+        /// main-thread role (client.boot.main or frame events), then the marker span it ran during the window. Returns the source too.
+        /// </summary>
+        public (string Name, string Source) ResolveThread(int tid, double t0, double t1)
+        {
+            string n = D.Samples.NameOf(tid);
+            if (n.Length > 0) return (n, "samples");
+            if (D.Ev.ThreadNames.TryGetValue(tid, out var m) && m.Length > 0) return (m, "thread_event");
+            int pid = D.Samples.Cpu.TryGetValue(tid, out var ser) ? ser.Pid : 0;
+            if (pid != 0 && D.Info.ChildPid != 0 && pid != D.Info.ChildPid)
+            {
+                string pn = D.Samples.ProcNames.TryGetValue(pid, out var p) && p.Length > 0 ? p : "process";
+                return (pn + " pid " + Txt.I(pid) + " (other process)", "process");
+            }
+            var boot = D.Spans.Where(s => s.Marker == "client.boot.main").OrderBy(s => s.T0).FirstOrDefault();
+            if (boot != null && boot.Tid == tid) return ("main thread (client.boot.main)", "main_thread");
+            if (D.Ev.Frames.Any(f => f.Tid == tid) || D.Ev.Playables.Any(f => f.Tid == tid)) return ("main thread (frame loop)", "main_thread");
+            Span? best = null;
+            double bestOv = 0;
+            foreach (var s in D.Spans)
+            {
+                if (s.Tid != tid || s.Marker == "frame") continue;
+                double ov = Math.Min(t1, s.T1) - Math.Max(t0, s.T0);
+                if (ov > bestOv) { bestOv = ov; best = s; }
+            }
+            if (best != null)
+            {
+                string mid = D.Ev.ThreadManagedIds.TryGetValue(tid, out int mi) ? "managed thread " + Txt.I(mi) : "unnamed thread";
+                return (mid + " running " + best.Marker, "marker_span");
+            }
+            return ("", "none");
+        }
+
+        private string EventOnThread(int tid, double t0, double t1, bool before)
+        {
+            double bestT = before ? double.MinValue : double.MaxValue;
+            string label = "";
+            void Consider(double t, string what)
+            {
+                if (before ? (t <= t0 + 1e-6 && t > bestT) : (t >= t1 - 1e-6 && t < bestT)) { bestT = t; label = what; }
+            }
+            foreach (var s in D.Spans)
+            {
+                if (s.Tid != tid) continue;
+                Consider(s.T0, "Begin " + s.Marker);
+                if (!s.Open) Consider(s.T1, "End " + s.Marker);
+            }
+            foreach (var f in D.Ev.Frames) if (f.Tid == tid) Consider(f.T, "frame event");
+            foreach (var f in D.Ev.FrameAggs) if (f.Tid == tid) Consider(f.T, "frame aggregate");
+            foreach (var f in D.Ev.Playables) if (f.Tid == tid) Consider(f.T, "playable");
+            if (label.Length == 0) return "none on this thread";
+            return label + " at " + Txt.Sec(bestT) + " s (" + Txt.Sec(Math.Abs((before ? t0 : t1) - bestT)) + " s " + (before ? "before" : "after") + ")";
+        }
+
         private void Attribute(Silence s)
         {
-            if (!s.HasSamples) { s.Verdict = "n/a (no samples)"; return; }
+            if (!s.HasSamples) { s.Verdict = "n/a (no samples)"; s.Cause = "no_samples"; return; }
             double best = -1;
             int bestTid = 0;
+            var top = new List<(int Tid, double Cpu)>();
             foreach (var kv in D.Samples.Cpu)
             {
                 double dlt = kv.Value.Delta(s.T0, s.T1);
+                top.Add((kv.Key, dlt));
                 if (dlt > best) { best = dlt; bestTid = kv.Key; }
             }
             s.TopTid = bestTid;
             s.TopCpuMs = Math.Max(0, best);
-            s.TopName = best >= 0 ? ThreadName(bestTid) : "";
-            s.IoBytes = D.Samples.IoDelta(s.T0, s.T1);
-            s.GcPauseMs = GcPauseIn(s.T0, s.T1);
             double dur = s.Dur;
+            s.TopShare = dur > 0 ? s.TopCpuMs / dur : 0;
+            if (best > 0)
+            {
+                var (nm, src) = ResolveThread(bestTid, s.T0, s.T1);
+                s.TopName = nm; s.NameSource = src;
+            }
+            s.IoBytes = D.Samples.IoDelta(s.T0, s.T1);
+            foreach (var pc in D.Samples.ProcCpu.Values) s.ProcCpuMs += pc.Delta(s.T0, s.T1);
+            s.GcPauseMs = GcPauseIn(s.T0, s.T1);
             var parts = new List<string>();
             bool cpuHit = best > 0 && s.TopCpuMs >= CpuShare * dur;
             if (cpuHit)
@@ -435,9 +536,49 @@ namespace SparkLoad.Analyzer
                 if (s.TopName.Length > 0) { parts.Add("cpu thread " + s.TopName); s.Named = true; }
                 else parts.Add("cpu unnamed thread " + s.TopTid.ToString(CultureInfo.InvariantCulture));
             }
-            if (s.IoBytes >= IoBytesWindow) parts.Add("io");
-            if (s.GcPauseMs >= CpuShare * dur) parts.Add("gc");
+            bool io = s.IoBytes >= IoBytesWindow, gc = s.GcPauseMs >= CpuShare * dur;
+            if (io) parts.Add("io");
+            if (gc) parts.Add("gc");
             s.Verdict = parts.Count > 0 ? string.Join(" + ", parts) : "idle (no cpu, io or gc)";
+            if (!s.Named)
+            {
+                if (cpuHit) s.Cause = "no_thread_name";
+                else if (io || gc || best <= 0) s.Cause = "idle_or_io";
+                else s.Cause = "low_cpu_share";
+            }
+
+            // Diagnostics, for every silence: top three threads, markers open in the gap, nearest events.
+            s.TopThreads = string.Join("; ", top.Where(x => x.Cpu > 0).OrderByDescending(x => x.Cpu).Take(3).Select(x =>
+            {
+                string n = ResolveThread(x.Tid, s.T0, s.T1).Name;
+                return (n.Length > 0 ? n : "(unnamed)") + " tid " + Txt.I(x.Tid) + " " + Txt.Sec(x.Cpu) + " s";
+            }));
+            var open = new Dictionary<string, double>();
+            foreach (var sp in D.Spans)
+            {
+                if (sp.Marker == "frame") continue;
+                double ov = Math.Min(s.T1, sp.T1) - Math.Max(s.T0, sp.T0);
+                if (ov <= 0) continue;
+                open[sp.Marker] = (open.TryGetValue(sp.Marker, out double o) ? o : 0) + ov;
+            }
+            s.OpenSpans = string.Join(", ", open.OrderByDescending(kv => kv.Value).Take(4).Select(kv => kv.Key + " " + Txt.Sec(kv.Value) + " s"));
+            if (best <= 0)
+            {
+                s.ThreadBefore = s.ThreadAfter = "n/a (no thread used cpu in the gap)";
+            }
+            else
+            {
+                int otherPid = D.Samples.Cpu.TryGetValue(bestTid, out var ser2) ? ser2.Pid : 0;
+                if (otherPid != 0 && D.Info.ChildPid != 0 && otherPid != D.Info.ChildPid)
+                {
+                    s.ThreadBefore = s.ThreadAfter = "none (thread of pid " + Txt.I(otherPid) + ", not the hooked process)";
+                }
+                else
+                {
+                    s.ThreadBefore = EventOnThread(bestTid, s.T0, s.T1, true);
+                    s.ThreadAfter = EventOnThread(bestTid, s.T0, s.T1, false);
+                }
+            }
         }
 
         private void BuildCoverage()
@@ -593,9 +734,13 @@ namespace SparkLoad.Analyzer
             var g2 = new GateLine { Id = "G2" };
             var pre = Silences.Where(s => s.Pre).ToList();
             string sil = D.LogsPresent || D.Ev.HasMarkers ? Txt.I(pre.Count) : "n/a";
-            string unnamed = D.Samples.Present && D.Ev.HasMarkers ? Txt.I(pre.Count(s => !s.Named)) : "n/a";
+            bool split = D.Samples.Present && D.Ev.HasMarkers;
+            string unnamed = split ? Txt.I(pre.Count(s => !s.Named)) : "n/a";
+            string named = split ? Txt.I(pre.Count(s => s.Named)) : "n/a";
+            string Cnt(string cause) => split ? Txt.I(pre.Count(s => !s.Named && s.Cause == cause)) : "n/a";
             string unc = Coverage.Computed ? Txt.F2(Coverage.UncoveredPct) : "n/a";
-            g2.Text = "uncovered_pct=" + unc + " silences_over_2s=" + sil + " unnamed=" + unnamed;
+            g2.Text = "uncovered_pct=" + unc + " silences_over_2s=" + sil + " named=" + named + " unnamed=" + unnamed
+                + " no_thread_name=" + Cnt("no_thread_name") + " low_cpu_share=" + Cnt("low_cpu_share") + " idle_or_io=" + Cnt("idle_or_io");
             g2.Pass = Coverage.Computed && Coverage.UncoveredPct <= G2LimitPct && unnamed == "0";
             g2.Status = g2.Pass ? "PASS" : "FAIL";
             Gates.Add(g2);

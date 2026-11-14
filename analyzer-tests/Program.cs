@@ -10,7 +10,7 @@ using SparkLoad.Analyzer;
 
 namespace SparkLoad.AnalyzerTests
 {
-    internal static class Program
+    internal static partial class Program
     {
         private static int _passed, _failed;
         private static string _runs = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "runs", "synthetic"));
@@ -59,6 +59,7 @@ namespace SparkLoad.AnalyzerTests
                 TestA();
                 TestB();
                 TestC();
+                TestSilenceNaming();
                 TestOverrides();
                 TestCompare();
                 TestRealTrace();
@@ -91,7 +92,7 @@ namespace SparkLoad.AnalyzerTests
             var rows = CsvReader.Rows(csvPath).ToList();
             Check(string.Join(",", rows[0]) == string.Join(",", Analyzer_Columns()), "a: csv header exact", string.Join(",", rows[0]));
             Check(rows.Count > 1 && rows[1][7] == "process" && rows[1][2] == "0.000", "a: first row is process at 0", rows.Count > 1 ? string.Join(",", rows[1]) : "");
-            Check(rows.All(r => r.Count == 17), "a: every csv row has 17 columns");
+            Check(rows.All(r => r.Count == 20), "a: every csv row has 20 columns");
             int passRows = rows.Skip(1).Count(r => r[7] == "column.pass");
             Check(passRows == Synth.Columns * 6, "a: 294 column.pass rows", passRows.ToString());
             int logPhaseRows = rows.Skip(1).Count(r => r[7] == "server.phase" && r[15] == "log");
@@ -108,7 +109,7 @@ namespace SparkLoad.AnalyzerTests
             Check(colRow != null, "a: column.pass row has x,z,pass");
 
             // md headings.
-            foreach (var h in new[] { "# SparkLoad loading report", "## Run", "## Hook targets", "## Phases", "## Top mods by phase time", "## Columns", "## Silences", "## GC", "## Coverage", "## Log cross-check", "## Answers", "## Gates" })
+            foreach (var h in new[] { "# SparkLoad loading report", "## Run", "## Hook targets", "## Phases", "## Top mods by phase time", "## Columns", "## Silences", "## Unnamed silences", "## GC", "## Coverage", "## Log cross-check", "## Answers", "## Gates" })
                 Check(md.Contains(h + "\n") || md.Contains(h + "\r\n"), "a: heading '" + h + "'");
             Check(!md.Contains("## Moved bottleneck"), "a: no compare section without --compare");
             Check(md.Contains("TIMING-VOID") == false, "a: no timing-void line on default arm");
@@ -119,7 +120,7 @@ namespace SparkLoad.AnalyzerTests
 
             // Gates.
             Check(Gate(md, "G1") == "G1 g1_delta_ms=12.500 PASS", "a: G1 line", Gate(md, "G1"));
-            Check(Gate(md, "G2") == "G2 uncovered_pct=0.83 silences_over_2s=1 unnamed=0 PASS", "a: G2 line", Gate(md, "G2"));
+            Check(Gate(md, "G2") == "G2 uncovered_pct=0.83 silences_over_2s=1 named=1 unnamed=0 no_thread_name=0 low_cpu_share=0 idle_or_io=0 PASS", "a: G2 line", Gate(md, "G2"));
             Check(Gate(md, "G3") == "G3 zero_hit_targets=none lost=0 columns_done=49 PASS", "a: G3 line", Gate(md, "G3"));
             Check(Gate(md, "G6") == "G6 max_delta_ms=350.0 phases=8 PASS", "a: G6 line", Gate(md, "G6"));
             Check(Gate(md, "G11") == "G11 main_idle_s=47.50 postfinalize_gap_s=4.34 frames_in_gap=90 blocklist_wait_s=3.01 ANSWERED", "a: G11 line", Gate(md, "G11"));
@@ -146,7 +147,7 @@ namespace SparkLoad.AnalyzerTests
             Check(File.Exists(Path.Combine(dir, "events.jsonl")), "a: events.jsonl still present");
         }
 
-        private static string[] Analyzer_Columns() => new[] { "run_id", "arm", "t_start_ms", "t_end_ms", "dur_ms", "side", "thread", "phase", "subphase", "mod", "x", "z", "pass", "count", "bytes", "source", "lost" };
+        private static string[] Analyzer_Columns() => new[] { "run_id", "arm", "t_start_ms", "t_end_ms", "dur_ms", "side", "thread", "phase", "subphase", "mod", "x", "z", "pass", "count", "bytes", "source", "lost", "name_source", "named", "cause" };
 
         // (b) seq gap and zero-hit target.
         private static void TestB()
@@ -179,7 +180,7 @@ namespace SparkLoad.AnalyzerTests
             Check(rc == 0, "c: exit 0", log);
             string md = File.ReadAllText(Path.Combine(dir, "loading.md"));
             Check(Gate(md, "G1") == "G1 g1_delta_ms=8.000 PASS", "c: G1", Gate(md, "G1"));
-            Check(Gate(md, "G2") == "G2 uncovered_pct=n/a silences_over_2s=1 unnamed=n/a FAIL", "c: G2 n/a", Gate(md, "G2"));
+            Check(Gate(md, "G2") == "G2 uncovered_pct=n/a silences_over_2s=1 named=n/a unnamed=n/a no_thread_name=n/a low_cpu_share=n/a idle_or_io=n/a FAIL", "c: G2 n/a", Gate(md, "G2"));
             Check(Gate(md, "G3") == "G3 zero_hit_targets=n/a lost=n/a columns_done=n/a FAIL", "c: G3 n/a", Gate(md, "G3"));
             Check(Gate(md, "G6") == "G6 max_delta_ms=n/a phases=0 FAIL", "c: G6 n/a", Gate(md, "G6"));
             Check(Gate(md, "G11") == "G11 main_idle_s=n/a postfinalize_gap_s=n/a frames_in_gap=n/a blocklist_wait_s=n/a MISSING", "c: G11 n/a", Gate(md, "G11"));
