@@ -199,11 +199,11 @@ namespace SparkLoad.Launch
             }
         }
 
-        static IntPtr MakeJob(ulong processMemoryBytes)
+        static IntPtr MakeJob(ulong processMemoryBytes, bool killOnClose)
         {
             IntPtr job = Native.CreateJobObjectW(IntPtr.Zero, null);
             if (job == IntPtr.Zero) return IntPtr.Zero;
-            SetJobLimits(job, true, processMemoryBytes);
+            SetJobLimits(job, killOnClose, processMemoryBytes);
             return job;
         }
 
@@ -316,17 +316,18 @@ namespace SparkLoad.Launch
             char[] cmd = (cmdText + "\0").ToCharArray();
             string cwd = Path.GetDirectoryName(exeFull) ?? Environment.CurrentDirectory;
 
-            ulong memLimitBytes = o.MaxChildGb > 0 ? (ulong)(o.MaxChildGb * 1073741824.0) : 0;
-            IntPtr job = MakeJob(memLimitBytes);
+            // Kit mode never caps and never kills a player's game: no process memory limit, no kill-on-close.
+            ulong memLimitBytes = !o.Kit && o.MaxChildGb > 0 ? (ulong)(o.MaxChildGb * 1073741824.0) : 0;
+            IntPtr job = MakeJob(memLimitBytes, !o.Kit);
             if (job == IntPtr.Zero)
             {
                 log.Line("CreateJobObject failed, error " + Marshal.GetLastWin32Error().ToString(CultureInfo.InvariantCulture));
                 diag?.Dispose();
                 return 4;
             }
-            log.Line("job: kill-on-close, process memory limit " + (memLimitBytes > 0
+            log.Line("job: " + (o.Kit ? "kit mode, no kill-on-close, " : "kill-on-close, ") + "process memory limit " + (memLimitBytes > 0
                 ? o.MaxChildGb.ToString("0.##", CultureInfo.InvariantCulture) + " GB (flags 0x" + (Native.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | Native.JOB_OBJECT_LIMIT_PROCESS_MEMORY).ToString("X", CultureInfo.InvariantCulture) + ", bytes " + memLimitBytes.ToString(CultureInfo.InvariantCulture) + ")"
-                : "off (flags 0x" + Native.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.ToString("X", CultureInfo.InvariantCulture) + ")")
+                : "off (flags 0x" + (o.Kit ? 0u : Native.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE).ToString("X", CultureInfo.InvariantCulture) + ")")
                 + "; trace size cap " + (o.MaxTraceMb > 0 ? o.MaxTraceMb.ToString("0.##", CultureInfo.InvariantCulture) + " MB" : "off"));
 
             uint flags = Native.CREATE_SUSPENDED | Native.CREATE_UNICODE_ENVIRONMENT | (o.NoWindow ? Native.CREATE_NO_WINDOW : 0);
@@ -400,7 +401,8 @@ namespace SparkLoad.Launch
                 ["trace_end"] = null,
                 ["child_exit_code"] = null,
                 ["max_trace_mb"] = o.MaxTraceMb,
-                ["max_child_gb"] = o.MaxChildGb,
+                ["max_child_gb"] = o.Kit ? 0 : o.MaxChildGb,
+                ["kit_mode"] = o.Kit,
             };
             string runJsonPath = Path.Combine(runDir, "run.json");
             try { WriteRunJson(runJsonPath, rj); } catch { }
@@ -487,6 +489,24 @@ namespace SparkLoad.Launch
                 Native.TerminateJobObject(job, 1);
                 Native.WaitForSingleObject(pi.hProcess, 5000);
                 killed = true;
+            }
+
+            // Kit mode: the trace is stopped and saved; wait (no time limit, never kill) until the player closes the game,
+            // then analyze. The game is never terminated by the launcher in this mode.
+            if (o.Kit)
+            {
+                if (!childGone || Native.WaitForSingleObject(pi.hProcess, 0) != Native.WAIT_OBJECT_0)
+                {
+                    log.Line("kit: load trace saved. The game is still running: play as long as you like, then close it normally. The analysis starts after you close it.");
+                    while (JobProcessCount(job) > 0) Thread.Sleep(500);
+                    log.Line("kit: the game has closed");
+                }
+                if (Native.WaitForSingleObject(pi.hProcess, 2000) == Native.WAIT_OBJECT_0)
+                {
+                    Native.GetExitCodeProcess(pi.hProcess, out exitCode);
+                    rj["child_exit_code"] = (int)exitCode;
+                    try { WriteRunJson(runJsonPath, rj); } catch (Exception ex) { log.Line("run.json write failed: " + ex.Message); }
+                }
             }
 
             // analyzer

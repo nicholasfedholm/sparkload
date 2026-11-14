@@ -12,7 +12,7 @@ namespace SparkLoad
             Native.AttachParentConsole();
             if (args.Length == 0)
             {
-                Err("sparkload: missing command (run, analyze, preflight)");
+                Err("sparkload: missing command (run, analyze, preflight, kit)");
                 return 2;
             }
             try
@@ -21,6 +21,8 @@ namespace SparkLoad
                 {
                     case "run":
                         return CmdRun(args);
+                    case "kit":
+                        return Kit.Run(args);
                     case "analyze":
                         return CmdAnalyze(args);
                     case "preflight":

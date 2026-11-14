@@ -24,6 +24,7 @@ namespace SparkLoad.Launch
         public string? Compare;
         public string? ManifestCmd;
         public bool NoWindow;
+        public bool Kit;                   // portable audit kit: no job cap, no kill-on-close, wait for the player to close the game, then analyze
         public double DebugHoldBeforeResume;
         public double MaxTraceMb = 1536;   // trace size cap, 0 = off
         public double MaxChildGb = 20;     // per-process commit limit of the job, 0 = off
