@@ -16,6 +16,8 @@ MARKERS = [
     "client.atlas.A", "client.atlas.B", "client.atlas.C",
     "client.handbook", "client.finalize.handle", "client.finalize.trigger", "frame",
     "client.boot.start",   # extra (ClientProgram.Start), not in SPEC list
+    "server.modload.sort", "server.modload.cache", "server.modload.instantiate", "server.modload.end",   # P3 2026-11-14
+    "server.assets.external", "server.assets.base",
 ]
 MID = {n: i + 1 for i, n in enumerate(MARKERS)}
 
@@ -30,7 +32,7 @@ SPECIAL = {
     "CEAPI_TriggerLevelFinalize": ("Fin_Pre", "Fin_Post"),
     "CM_MainGameLoop": ("Frame_Pre", "Frame_Post"),
 }
-SPECIAL["ML_LoadMods"] = ("BlocklistEnd_Pre", None)
+SPECIAL["ML_LoadMods"] = ("BlocklistEnd_Pre", "ModLoadEnd_Post")
 
 MAP = {
     "CP_Main": ["client.boot.main"], "CP_Start": ["client.boot.start"], "SM_Start": ["client.boot.screenmanager"],
@@ -39,7 +41,10 @@ MAP = {
     "SRV_EnterRunPhase": ["server.phase"], "SRV_Launch": ["server.launch"],
     "ML_TryRunModPhase": ["mod.phase"],
     "SSMH_OnLoadAssets": ["server.blocklist.wait", "server.blocklist.set"],
-    "ML_LoadMods": ["server.blocklist.wait"],
+    "ML_LoadMods": ["server.blocklist.wait", "server.modload.end"],
+    "ML_CheckAndSortDependencies": ["server.modload.sort"], "ML_ClearCacheFolder": ["server.modload.cache"],
+    "ML_InstantiateMods": ["server.modload.instantiate"],
+    "AM_AddExternalAssets": ["server.assets.external"], "AM_InitAndLoadBaseAssets": ["server.assets.base"],
     "SSBIR_RemapBlocks": ["server.remap.blocks"], "SSIIR_RemapItems": ["server.remap.items"],
     "SSLS_LoadSaveGame": ["server.save.load"], "SSSC_InitWorldgen": ["server.spawn.pregen"],
     "SSSC_PopulateChunk": ["column.pass"], "SSSC_LoadOrGenColumn": ["column.load"],
@@ -53,11 +58,12 @@ MAP = {
     "CM_MainGameLoop": ["frame"],
 }
 SPECIAL_MARKERS = {"server.phase", "mod.phase", "server.blocklist.wait", "server.blocklist.set", "column.pass",
-                   "column.load", "frame", "client.finalize.trigger"}
+                   "column.load", "frame", "client.finalize.trigger", "server.modload.end"}
 
 def pascal(n):
     return "".join(p[:1].upper() + p[1:] for p in re.split(r"[.]", n))
 
+TJ = os.environ.get("SPARKLOAD_TARGETS_JSON", TJ)
 rows = json.load(open(TJ, encoding="utf-8"))
 byid = {r["marker"]: r for r in rows}
 # add ML_LoadMods (2-param overload), verified with sigdump on stock and Optimum VintagestoryLib (ilLen 709 both)

@@ -126,5 +126,29 @@ namespace SparkLoad.AnalyzerTests
                 Check(g3.Contains("lost=81740") && g3.EndsWith("FAIL", StringComparison.Ordinal), "p2e: 23 contiguous gaps give lost=81740 and G3 FAIL", g3);
             }
         }
+
+        // (f) a silence covered by a server.modload.* span is named from that span; (g) a silence with no covering span
+        // stays UNNAMED and is never dropped. Same hand-made run as TestSilenceNaming with marker 2 renamed.
+        private static void TestModloadNaming()
+        {
+            string dir = Dir("naming-modload");
+            WriteNamingRun(dir);
+            string ep = Path.Combine(dir, "events.jsonl");
+            File.WriteAllText(ep, File.ReadAllText(ep).Replace("client.shapes.entity", "server.modload.instantiate"), new UTF8Encoding(false));
+            var (rc, log) = RunAnalyzer(dir);
+            Check(rc == 0, "modload naming: exit 0", log);
+            string md = File.ReadAllText(Path.Combine(dir, "loading.md"));
+            var rows = md.Split('
+').Where(l => l.StartsWith("| 1.50 |", StringComparison.Ordinal) || l.StartsWith("| 5.00 |", StringComparison.Ordinal)
+                || l.StartsWith("| 9.00 |", StringComparison.Ordinal) || l.StartsWith("| 13.00 |", StringComparison.Ordinal)
+                || l.StartsWith("| 17.00 |", StringComparison.Ordinal) || l.StartsWith("| 21.00 |", StringComparison.Ordinal)).Select(l => l.TrimEnd()).ToList();
+            Check(rows.Count == 6, "modload naming: six silence rows, none dropped", rows.Count.ToString());
+            if (rows.Count == 6)
+            {
+                Check(rows[2].Contains("running server.modload.instantiate tid 920") && rows[2].EndsWith("| marker_span | named |"), "(f) silence inside a server.modload.instantiate span is named", rows[2]);
+                Check(rows[1].EndsWith("| none | UNNAMED (no_thread_name) |"), "(g) silence with no covering span stays unnamed and is kept", rows[1]);
+            }
+            Check(Gate(md, "G2").Contains("silences_over_2s=6 named=3 unnamed=3"), "modload naming: G2 counts unchanged by the new marker names", Gate(md, "G2"));
+        }
     }
 }

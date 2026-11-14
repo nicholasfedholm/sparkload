@@ -285,7 +285,7 @@ namespace SparkLoad.Hook.Tests
             }
 
             // table sanity
-            T.Check("a5 marker count 31 (30 SPEC markers plus client.boot.start)", Mk.Count == 31 && Mk.Names.Length == 32);
+            T.Check("a5 marker count 37 (30 SPEC markers, client.boot.start, 6 P3 modload/assets markers)", Mk.Count == 37 && Mk.Names.Length == 38);
             T.Check("a6 every SPEC marker name present", SpecMarkers.All(m => Array.IndexOf(Mk.Names, m) > 0));
             var missingMethods = new List<string>();
             foreach (TargetRow row in TargetTable.Rows)
@@ -299,7 +299,7 @@ namespace SparkLoad.Hook.Tests
                 foreach (string m in row.Markers) if (Array.IndexOf(Mk.Names, m) <= 0) missingMethods.Add(row.Id + ":marker " + m);
             }
             T.Check("a7 every table row has its prefix/postfix methods and known markers", missingMethods.Count == 0, string.Join(",", missingMethods));
-            T.Check("a8 table has 31 rows (30 targets plus ML_LoadMods)", TargetTable.Rows.Length == 31);
+            T.Check("a8 table has 36 rows (35 targets plus ML_LoadMods)", TargetTable.Rows.Length == 36);
         }
 
         // ================= (b) 30 targets against the game dlls =================
@@ -336,11 +336,11 @@ namespace SparkLoad.Hook.Tests
 
         static void SectionB_Signatures()
         {
-            Console.WriteLine("== (b) 30 target signatures vs game dlls (metadata only)");
+            Console.WriteLine("== (b) 35 target signatures vs game dlls (metadata only)");
             using (var doc = JsonDocument.Parse(File.ReadAllText(Targets)))
             {
                 JsonElement[] jrows = doc.RootElement.EnumerateArray().ToArray();
-                T.Check("b0 targets.json has 30 rows", jrows.Length == 30);
+                T.Check("b0 targets.json has 35 rows", jrows.Length == 35);
                 var byId = TargetTable.Rows.ToDictionary(x => x.Id);
                 var covered = new HashSet<string>();
 
@@ -376,15 +376,15 @@ namespace SparkLoad.Hook.Tests
                         else good = good && idx.Count == 1;
                         if (good) { ok++; covered.Add(row.Id); } else { bad++; badList.Add(row.Id + " " + status + " " + detail + " matches=" + idx.Count); }
                     }
-                    T.Check("b1 " + set + ": all 31 table rows resolve by exact signature (PopulateChunk overloads: "
-                        + (set == "stock" ? "1" : "2 by return type") + ")", bad == 0 && ok == 31, string.Join(" | ", badList));
+                    T.Check("b1 " + set + ": all 36 table rows resolve by exact signature (PopulateChunk overloads: "
+                        + (set == "stock" ? "1" : "2 by return type") + ")", bad == 0 && ok == 36, string.Join(" | ", badList));
                 }
 
                 // table rows correspond one to one to targets.json (plus ML_LoadMods)
                 var jsonIds = new HashSet<string>(jrows.Select(j => j.GetProperty("marker").GetString()));
                 var tableIds = new HashSet<string>(TargetTable.Rows.Select(x => x.Id));
                 tableIds.ExceptWith(new[] { "ML_LoadMods" });
-                T.Check("b2 table ids equal targets.json ids (30)", jsonIds.SetEquals(tableIds));
+                T.Check("b2 table ids equal targets.json ids (35)", jsonIds.SetEquals(tableIds));
 
                 // the table agrees with targets.json field by field
                 var diffs = new List<string>();
@@ -499,9 +499,9 @@ namespace SparkLoad.Hook.Tests
             try { Core.StatsAll(); } catch (Exception e) { thrown = e; }
             T.Check("d1 StatsAll with no game assemblies loaded does not throw", thrown == null, Convert.ToString(thrown));
             var afterStats = cap.Snapshot().Where(e => e.Id == 6).ToList();
-            T.Check("d1b embedded table: every one of the 31 table rows reported missing (assembly not loaded) per marker, 33 events",
-                afterStats.Count == 33 && afterStats.All(e => Vals(e, "status") == "missing" && Vals(e, "detail").Contains("not loaded"))
-                && afterStats.Select(e => Vals(e, "marker")).Distinct().Count() == 31, "events=" + afterStats.Count);
+            T.Check("d1b embedded table: every one of the 36 table rows reported missing (assembly not loaded) per marker, 39 events",
+                afterStats.Count == 39 && afterStats.All(e => Vals(e, "status") == "missing" && Vals(e, "detail").Contains("not loaded"))
+                && afterStats.Select(e => Vals(e, "marker")).Distinct().Count() == 37, "events=" + afterStats.Count);
 
             // --- (d) fake game types patched through the real Installer ---
             Fail_Safe_And_Patching(cap);
@@ -529,8 +529,8 @@ namespace SparkLoad.Hook.Tests
             List<Rec> lateEv = late.Snapshot();
             T.Note("in-process captured events: " + ev.Count + ", late listener: " + lateEv.Count + ", errors: " + cap.Errors.Count);
             T.Check("c3 no EventSource error or manifest messages", cap.Errors.Count == 0 && late.Errors.Count == 0, string.Join(" | ", cap.Errors.Concat(late.Errors)));
-            T.Check("c4 late-attach Replay delivered Hello and all 31 MarkerDefs",
-                lateEv.Count(e => e.Id == 1) >= 1 && lateEv.Count(e => e.Id == 2) >= 31);
+            T.Check("c4 late-attach Replay delivered Hello and all 37 MarkerDefs",
+                lateEv.Count(e => e.Id == 1) >= 1 && lateEv.Count(e => e.Id == 2) >= 37);
 
             var all = ev.Concat(lateEv).ToList();
             for (int id = 1; id <= 10; id++)
@@ -565,10 +565,10 @@ namespace SparkLoad.Hook.Tests
             T.Check("c12 Hello values (pid, qpcFreq, version 0.1.0, runtime text)",
                 hello != null && Vals(hello, "pid") == Environment.ProcessId.ToString() && Vals(hello, "qpcFreq") == Stopwatch.Frequency.ToString()
                 && Vals(hello, "hookVersion") == "0.1.0" && Vals(hello, "runtime").Length > 0, hello == null ? "missing" : string.Join(",", hello.Vals));
-            var defs = lateEv.Where(e => e.Id == 2).Take(31).ToList();
-            bool defsOk = defs.Count == 31;
-            for (int i = 0; defsOk && i < 31; i++) defsOk = Vals(defs[i], "markerId") == (i + 1).ToString() && Vals(defs[i], "name") == Mk.Names[i + 1];
-            T.Check("c13 MarkerDef 1..31 carry the table ids and names", defsOk);
+            var defs = lateEv.Where(e => e.Id == 2).Take(37).ToList();
+            bool defsOk = defs.Count == 37;
+            for (int i = 0; defsOk && i < 37; i++) defsOk = Vals(defs[i], "markerId") == (i + 1).ToString() && Vals(defs[i], "name") == Mk.Names[i + 1];
+            T.Check("c13 MarkerDef 1..37 carry the table ids and names", defsOk);
             T.Check("c14 FrameStats: exactly 120 Frame events, one Playable at frame 60, at least one FrameAgg",
                 ev.Count(e => e.Id == 7 && Vals(e, "tid") != workerTid.ToString()) == 120
                 && ev.Count(e => e.Id == 9 && Vals(e, "tid") != workerTid.ToString() && Vals(e, "frameIndex") == "60") == 1
@@ -581,7 +581,7 @@ namespace SparkLoad.Hook.Tests
                 Rec last = stats.LastOrDefault(e => Vals(e, "marker") == Mk.Names[i]);
                 if (last == null || Vals(last, "hits") != Interlocked.Read(ref Core.Hits[i]).ToString()) badStats.Add(Mk.Names[i]);
             }
-            T.Check("c15 final Stats events carry the hit counter of every marker (31) plus hook.faults; server.phase=1 column.pass=3 blocklist.wait=2",
+            T.Check("c15 final Stats events carry the hit counter of every marker (37) plus hook.faults; server.phase=1 column.pass=3 blocklist.wait=2",
                 badStats.Count == 0 && stats.Any(e => Vals(e, "marker") == "hook.faults")
                 && Core.Hits[Mk.ServerPhase] == 1 && Core.Hits[Mk.ColumnPass] == 3 && Core.Hits[Mk.ServerBlocklistWait] == 2,
                 string.Join(",", badStats) + " phase=" + Core.Hits[Mk.ServerPhase] + " pass=" + Core.Hits[Mk.ColumnPass] + " wait=" + Core.Hits[Mk.ServerBlocklistWait]);
@@ -648,8 +648,8 @@ namespace SparkLoad.Hook.Tests
                 T.Check("c20 nettrace Begin payload equals the driven values positionally",
                     nb != null && nb.Vals.SequenceEqual(new[] { Mk.ColumnPass.ToString(), workerTid.ToString(), "1", Q.ToString(), "11", "-22", "3", "str" }),
                     nb == null ? "missing" : string.Join(",", nb.Vals));
-                T.Check("c21 nettrace holds the 31 Hello-time MarkerDefs and a Hello (written during Initialize, before the listener)",
-                    np.Count(e => e.Id == 2) >= 31 && np.Any(e => e.Id == 1 && Vals(e, "hookVersion") == "0.1.0"));
+                T.Check("c21 nettrace holds the 37 Hello-time MarkerDefs and a Hello (written during Initialize, before the listener)",
+                    np.Count(e => e.Id == 2) >= 37 && np.Any(e => e.Id == 1 && Vals(e, "hookVersion") == "0.1.0"));
                 T.Check("c22 nettrace sequence per thread is gapless (seq 1..n for the worker thread)",
                     np.Where(e => (e.Id == 3 || e.Id == 4 || e.Id == 7 || e.Id == 8 || e.Id == 9) && Vals(e, "tid") == workerTid.ToString())
                       .Select(e => long.Parse(Vals(e, "seq"))).OrderBy(x => x).SequenceEqual(new long[] { 1, 2, 3, 4, 5 }));

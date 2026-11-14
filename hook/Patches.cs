@@ -120,10 +120,28 @@ namespace SparkLoad.Hook
             try
             {
                 long q = Stopwatch.GetTimestamp();
-                if (!t_waitPending) return;
-                t_waitPending = false;
-                if (!Core.On[Mk.ServerBlocklistWait]) return;
-                Emit.End(Mk.ServerBlocklistWait, q, t_waitA, 0, 0, null);
+                if (t_waitPending)
+                {
+                    t_waitPending = false;
+                    if (Core.On[Mk.ServerBlocklistWait]) Emit.End(Mk.ServerBlocklistWait, q, t_waitA, 0, 0, null);
+                }
+                // server.modload.end spans the LoadMods body: Begin here, End in ModLoadEnd_Post.
+                if (Core.On[Mk.ServerModloadEnd])
+                {
+                    Interlocked.Increment(ref Core.Hits[Mk.ServerModloadEnd]);
+                    Emit.Begin(Mk.ServerModloadEnd, q, 0, 0, 0, null);
+                }
+            }
+            catch { Core.Fault(); }
+        }
+
+        public static void ModLoadEnd_Post()
+        {
+            try
+            {
+                long q = Stopwatch.GetTimestamp();
+                if (!Core.On[Mk.ServerModloadEnd]) return;
+                Emit.End(Mk.ServerModloadEnd, q, 0, 0, 0, null);
             }
             catch { Core.Fault(); }
         }

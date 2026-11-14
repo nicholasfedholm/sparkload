@@ -38,8 +38,14 @@ namespace SparkLoad.Hook
         public const int ClientFinalizeTrigger = 29;
         public const int Frame = 30;
         public const int ClientBootStart = 31;
-        public const int Count = 31;
-        public static readonly string[] Names = new string[] { null, "client.boot.main", "client.boot.screenmanager", "client.boot.stage1", "client.boot.stage2", "client.boot.stage3", "client.boot.stage4", "client.boot.stage5", "server.launch", "server.phase", "mod.phase", "server.blocklist.wait", "server.blocklist.set", "server.remap.blocks", "server.remap.items", "server.save.load", "server.spawn.pregen", "column.pass", "column.load", "client.assets.handle", "client.assets.finish", "client.shapes.block", "client.shapes.item", "client.shapes.entity", "client.atlas.A", "client.atlas.B", "client.atlas.C", "client.handbook", "client.finalize.handle", "client.finalize.trigger", "frame", "client.boot.start" };
+        public const int ServerModloadSort = 32;
+        public const int ServerModloadCache = 33;
+        public const int ServerModloadInstantiate = 34;
+        public const int ServerModloadEnd = 35;
+        public const int ServerAssetsExternal = 36;
+        public const int ServerAssetsBase = 37;
+        public const int Count = 37;
+        public static readonly string[] Names = new string[] { null, "client.boot.main", "client.boot.screenmanager", "client.boot.stage1", "client.boot.stage2", "client.boot.stage3", "client.boot.stage4", "client.boot.stage5", "server.launch", "server.phase", "mod.phase", "server.blocklist.wait", "server.blocklist.set", "server.remap.blocks", "server.remap.items", "server.save.load", "server.spawn.pregen", "column.pass", "column.load", "client.assets.handle", "client.assets.finish", "client.shapes.block", "client.shapes.item", "client.shapes.entity", "client.atlas.A", "client.atlas.B", "client.atlas.C", "client.handbook", "client.finalize.handle", "client.finalize.trigger", "frame", "client.boot.start", "server.modload.sort", "server.modload.cache", "server.modload.instantiate", "server.modload.end", "server.assets.external", "server.assets.base" };
     }
 
     internal static class TargetTable
@@ -58,7 +64,7 @@ namespace SparkLoad.Hook
             new TargetRow("SRV_Launch", new string[] { "server.launch" }, "VintagestoryLib", "Vintagestory.Server.ServerMain", "Launch", false, new string[] { "System.Void" }, new string[] {  }, "Span_8_Pre", "Span_8_Post"),
             new TargetRow("ML_TryRunModPhase", new string[] { "mod.phase" }, "VintagestoryLib", "Vintagestory.Common.ModLoader", "TryRunModPhase", false, new string[] { "System.Boolean" }, new string[] { "Vintagestory.API.Common.Mod", "Vintagestory.API.Common.ModSystem", "Vintagestory.API.Common.ICoreAPI", "Vintagestory.Common.ModRunPhase" }, "ModPhase_Pre", "ModPhase_Post"),
             new TargetRow("SSMH_OnLoadAssets", new string[] { "server.blocklist.wait", "server.blocklist.set" }, "VintagestoryLib", "Vintagestory.Server.ServerSystemModHandler", "OnLoadAssets", false, new string[] { "System.Void" }, new string[] {  }, "Blocklist_Pre", null),
-            new TargetRow("ML_LoadMods", new string[] { "server.blocklist.wait" }, "VintagestoryLib", "Vintagestory.Common.ModLoader", "LoadMods", false, new string[] { "System.Void" }, new string[] { "System.Collections.Generic.List`1<Vintagestory.Common.ModContainer>", "System.Collections.Generic.IEnumerable`1<System.String>" }, "BlocklistEnd_Pre", null),
+            new TargetRow("ML_LoadMods", new string[] { "server.blocklist.wait", "server.modload.end" }, "VintagestoryLib", "Vintagestory.Common.ModLoader", "LoadMods", false, new string[] { "System.Void" }, new string[] { "System.Collections.Generic.List`1<Vintagestory.Common.ModContainer>", "System.Collections.Generic.IEnumerable`1<System.String>" }, "BlocklistEnd_Pre", "ModLoadEnd_Post"),
             new TargetRow("SSBIR_RemapBlocks", new string[] { "server.remap.blocks" }, "VintagestoryLib", "Vintagestory.Server.ServerSystemBlockIdRemapper", "RemapBlocks", false, new string[] { "System.Void" }, new string[] {  }, "Span_13_Pre", "Span_13_Post"),
             new TargetRow("SSIIR_RemapItems", new string[] { "server.remap.items" }, "VintagestoryLib", "Vintagestory.Server.ServerSystemItemIdRemapper", "RemapItems", false, new string[] { "System.Void" }, new string[] {  }, "Span_14_Pre", "Span_14_Post"),
             new TargetRow("SSLS_LoadSaveGame", new string[] { "server.save.load" }, "VintagestoryLib", "Vintagestory.Server.ServerSystemLoadAndSaveGame", "LoadSaveGame", false, new string[] { "System.Void" }, new string[] {  }, "Span_15_Pre", "Span_15_Post"),
@@ -77,6 +83,11 @@ namespace SparkLoad.Hook
             new TargetRow("SH_EventLevelFinalize", new string[] { "client.handbook" }, "VSSurvivalMod", "Vintagestory.GameContent.ModSystemSurvivalHandbook", "Event_LevelFinalize", false, new string[] { "System.Void" }, new string[] {  }, "Span_27_Pre", "Span_27_Post"),
             new TargetRow("CEAPI_TriggerLevelFinalize", new string[] { "client.finalize.trigger", "frame" }, "VintagestoryLib", "Vintagestory.Client.NoObf.ClientEventAPI", "TriggerLevelFinalize", false, new string[] { "System.Void" }, new string[] {  }, "Fin_Pre", "Fin_Post"),
             new TargetRow("CM_MainGameLoop", new string[] { "frame" }, "VintagestoryLib", "Vintagestory.Client.NoObf.ClientMain", "MainGameLoop", false, new string[] { "System.Void" }, new string[] { "System.Single" }, "Frame_Pre", "Frame_Post"),
+            new TargetRow("ML_CheckAndSortDependencies", new string[] { "server.modload.sort" }, "VintagestoryLib", "Vintagestory.Common.ModLoader", "CheckAndSortDependencies", false, new string[] { "System.Collections.Generic.List`1<Vintagestory.Common.ModContainer>" }, new string[] { "System.Collections.Generic.IEnumerable`1<Vintagestory.Common.ModContainer>" }, "Span_32_Pre", "Span_32_Post"),
+            new TargetRow("ML_ClearCacheFolder", new string[] { "server.modload.cache" }, "VintagestoryLib", "Vintagestory.Common.ModLoader", "ClearCacheFolder", false, new string[] { "System.Void" }, new string[] { "System.Collections.Generic.IEnumerable`1<Vintagestory.Common.ModContainer>" }, "Span_33_Pre", "Span_33_Post"),
+            new TargetRow("ML_InstantiateMods", new string[] { "server.modload.instantiate" }, "VintagestoryLib", "Vintagestory.Common.ModLoader", "instantiateMods", false, new string[] { "System.Collections.Generic.List`1<Vintagestory.API.Common.ModSystem>" }, new string[] { "System.Collections.Generic.List`1<Vintagestory.Common.ModContainer>" }, "Span_34_Pre", "Span_34_Post"),
+            new TargetRow("AM_AddExternalAssets", new string[] { "server.assets.external" }, "VintagestoryLib", "Vintagestory.Common.AssetManager", "AddExternalAssets", false, new string[] { "System.Int32" }, new string[] { "Vintagestory.API.Common.ILogger", "Vintagestory.Common.ModLoader" }, "Span_36_Pre", "Span_36_Post"),
+            new TargetRow("AM_InitAndLoadBaseAssets", new string[] { "server.assets.base" }, "VintagestoryLib", "Vintagestory.Common.AssetManager", "InitAndLoadBaseAssets", false, new string[] { "System.Int32" }, new string[] { "Vintagestory.API.Common.ILogger", "System.String" }, "Span_37_Pre", "Span_37_Post"),
         };
     }
 
@@ -310,6 +321,56 @@ namespace SparkLoad.Hook
         public static void Span_31_Post()
         {
             try { long q = Stopwatch.GetTimestamp(); if (!Core.On[31]) return; Emit.End(31, q, 0, 0, 0, null); }
+            catch { Core.Fault(); }
+        }
+        public static void Span_32_Pre()
+        {
+            try { long q = Stopwatch.GetTimestamp(); if (!Core.On[32]) return; Interlocked.Increment(ref Core.Hits[32]); Emit.Begin(32, q, 0, 0, 0, null); }
+            catch { Core.Fault(); }
+        }
+        public static void Span_32_Post()
+        {
+            try { long q = Stopwatch.GetTimestamp(); if (!Core.On[32]) return; Emit.End(32, q, 0, 0, 0, null); }
+            catch { Core.Fault(); }
+        }
+        public static void Span_33_Pre()
+        {
+            try { long q = Stopwatch.GetTimestamp(); if (!Core.On[33]) return; Interlocked.Increment(ref Core.Hits[33]); Emit.Begin(33, q, 0, 0, 0, null); }
+            catch { Core.Fault(); }
+        }
+        public static void Span_33_Post()
+        {
+            try { long q = Stopwatch.GetTimestamp(); if (!Core.On[33]) return; Emit.End(33, q, 0, 0, 0, null); }
+            catch { Core.Fault(); }
+        }
+        public static void Span_34_Pre()
+        {
+            try { long q = Stopwatch.GetTimestamp(); if (!Core.On[34]) return; Interlocked.Increment(ref Core.Hits[34]); Emit.Begin(34, q, 0, 0, 0, null); }
+            catch { Core.Fault(); }
+        }
+        public static void Span_34_Post()
+        {
+            try { long q = Stopwatch.GetTimestamp(); if (!Core.On[34]) return; Emit.End(34, q, 0, 0, 0, null); }
+            catch { Core.Fault(); }
+        }
+        public static void Span_36_Pre()
+        {
+            try { long q = Stopwatch.GetTimestamp(); if (!Core.On[36]) return; Interlocked.Increment(ref Core.Hits[36]); Emit.Begin(36, q, 0, 0, 0, null); }
+            catch { Core.Fault(); }
+        }
+        public static void Span_36_Post()
+        {
+            try { long q = Stopwatch.GetTimestamp(); if (!Core.On[36]) return; Emit.End(36, q, 0, 0, 0, null); }
+            catch { Core.Fault(); }
+        }
+        public static void Span_37_Pre()
+        {
+            try { long q = Stopwatch.GetTimestamp(); if (!Core.On[37]) return; Interlocked.Increment(ref Core.Hits[37]); Emit.Begin(37, q, 0, 0, 0, null); }
+            catch { Core.Fault(); }
+        }
+        public static void Span_37_Post()
+        {
+            try { long q = Stopwatch.GetTimestamp(); if (!Core.On[37]) return; Emit.End(37, q, 0, 0, 0, null); }
             catch { Core.Fault(); }
         }
     }
