@@ -302,7 +302,7 @@ namespace SparkLoad.Launch
                 };
                 if (deep) providers.Add(new TraceProvider { Name = "Microsoft-DotNETCore-SampleProfiler", Keywords = ulong.MaxValue, Level = 4 });
                 diag = new DiagServer(pipeName, Stopwatch.GetTimestamp(), Path.Combine(runDir, "ipc.log"), Path.Combine(runDir, "raw.nettrace"),
-                    providers, deep, deep, o.EventPipeBufferMb, true, s => log.Line(s));
+                    providers, deep, deep, (uint)o.EventPipeBufferMb, true, s => log.Line(s));
                 diag.HoldBeforeResumeSeconds = (int)Math.Ceiling(o.DebugHoldBeforeResume);
                 diag.MaxTraceBytes = o.MaxTraceMb > 0 ? (long)(o.MaxTraceMb * 1048576.0) : 0;
                 try
