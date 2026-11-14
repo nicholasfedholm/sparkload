@@ -307,6 +307,30 @@ namespace SparkLoad.Hook
         // base directory and the requesting assembly) for the missing simple name (0Harmony, OpenTK.*, ...).
         private static bool _fallbackSet;
         internal static bool ResolverRegistered { get { return _fallbackSet; } }
+        // Allowlist for the early resolver. Never answers for game assemblies (Vintagestory*, VS*): Optimum supplies
+        // patched ones from its cache and aborts if they load from elsewhere. OpenTK.* only when the host is not
+        // Optimum (no .optimum cache in play); 0Harmony and MonoMod.* as before.
+        internal static bool ResolverAllows(string simple, string hostExe)
+        {
+            if (string.IsNullOrEmpty(simple)) return false;
+            if (string.Equals(simple, "0Harmony", StringComparison.OrdinalIgnoreCase)) return true;
+            if (simple.StartsWith("MonoMod.", StringComparison.OrdinalIgnoreCase)) return true;
+            if (simple.StartsWith("OpenTK.", StringComparison.OrdinalIgnoreCase) || string.Equals(simple, "OpenTK", StringComparison.OrdinalIgnoreCase))
+            {
+                string exe = "";
+                try { exe = System.IO.Path.GetFileName(hostExe ?? ""); } catch { }
+                bool optimum = exe.StartsWith("Optimum", StringComparison.OrdinalIgnoreCase);
+                if (optimum)
+                {
+                    if (!_optimumLogged) { _optimumLogged = true; HookLog.Line("resolver: host is Optimum, OpenTK resolution left to the host"); }
+                    return false;
+                }
+                return true;
+            }
+            return false;
+        }
+        private static bool _optimumLogged;
+
         private static void RegisterResolver()
         {
             if (_fallbackSet) return;
@@ -317,6 +341,9 @@ namespace SparkLoad.Hook
                 {
                     string simple = new AssemblyName(a.Name).Name;
                     if (string.IsNullOrEmpty(simple)) return null;
+                    string hostExe = null;
+                    try { hostExe = Environment.GetEnvironmentVariable("SPARKLOAD_TARGET_EXE"); } catch { }
+                    if (!ResolverAllows(simple, hostExe)) return null; // host resolvers (Optimum cache, game) answer
                     var dirs = new List<string>();
                     try { string x = Environment.GetEnvironmentVariable("SPARKLOAD_TARGET_EXE"); if (!string.IsNullOrEmpty(x)) dirs.Add(System.IO.Path.GetDirectoryName(x)); } catch { }
                     try { dirs.Add(AppContext.BaseDirectory); } catch { }

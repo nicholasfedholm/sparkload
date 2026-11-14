@@ -477,6 +477,14 @@ namespace SparkLoad.Hook.Tests
             int ri = log3.IndexOf("0Harmony fallback resolver registered", StringComparison.Ordinal);
             int pi = log3.IndexOf(" patch attempt ", StringComparison.Ordinal);
             T.Check("c2e Lib resolver registered at init, before any patch attempt", Installer.ResolverRegistered && ri >= 0 && (pi < 0 || ri < pi), "ri=" + ri + " pi=" + pi);
+            T.Check("c2f resolver allowlist: game assemblies are never resolved (null to the host)",
+                !Installer.ResolverAllows("VintagestoryAPI", "Vintagestory.exe") && !Installer.ResolverAllows("VSSurvivalMod", "Vintagestory.exe")
+                && !Installer.ResolverAllows("VintagestoryLib", "Optimum.exe") && !Installer.ResolverAllows("VSEssentials", "Optimum.exe")
+                && !Installer.ResolverAllows("cairo-sharp", "Vintagestory.exe") && !Installer.ResolverAllows("VSCreativeMod", "Vintagestory.exe"));
+            T.Check("c2g resolver allowlist: 0Harmony, MonoMod.* and (stock host) OpenTK.Windowing.Desktop allowed; OpenTK left to Optimum",
+                Installer.ResolverAllows("0Harmony", "Vintagestory.exe") && Installer.ResolverAllows("MonoMod.Utils", "Vintagestory.exe")
+                && Installer.ResolverAllows("OpenTK.Windowing.Desktop", "Vintagestory.exe") && !Installer.ResolverAllows("OpenTK.Windowing.Desktop", "Optimum.exe")
+                && Installer.ResolverAllows("0Harmony", "Optimum.exe"));
             Environment.SetEnvironmentVariable("SPARKLOAD_TARGET_EXE", null);
 
             // --- driven events on a dedicated thread (seq starts at 1) ---
