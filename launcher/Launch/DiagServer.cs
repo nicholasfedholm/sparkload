@@ -251,8 +251,13 @@ namespace SparkLoad.Launch
                 int attempt;
                 lock (_lock)
                 {
-                    action = _stage;
+                    // A second connection that arrives while the session is being started waits for the outcome instead of
+                    // starting a second session (the start can take longer with a large buffer).
+                    int waited = 0;
+                    while (_stage == 3 && waited < 50) { Monitor.Wait(_lock, 100); waited++; }
+                    action = _stage == 3 ? 2 : _stage;
                     attempt = _attempt;
+                    if (action == 0) _stage = 3; // claim the session start
                 }
                 if (action == 0)
                 {
@@ -330,6 +335,8 @@ namespace SparkLoad.Launch
                         _stage = 1;
                         _log("diag: no tracing session, resuming without trace");
                     }
+                    else _stage = 0;
+                    Monitor.PulseAll(_lock);
                 }
                 return false;
             }
@@ -338,6 +345,7 @@ namespace SparkLoad.Launch
             {
                 _sessionOk = true;
                 _stage = 1;
+                Monitor.PulseAll(_lock);
             }
             IpcLog(pid, cookie, "session", "id=" + _sessionId.ToString(CultureInfo.InvariantCulture));
             _copyEnd = "running";
