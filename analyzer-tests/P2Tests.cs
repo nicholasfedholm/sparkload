@@ -138,8 +138,7 @@ namespace SparkLoad.AnalyzerTests
             var (rc, log) = RunAnalyzer(dir);
             Check(rc == 0, "modload naming: exit 0", log);
             string md = File.ReadAllText(Path.Combine(dir, "loading.md"));
-            var rows = md.Split('
-').Where(l => l.StartsWith("| 1.50 |", StringComparison.Ordinal) || l.StartsWith("| 5.00 |", StringComparison.Ordinal)
+            var rows = md.Split((char)10).Where(l => l.StartsWith("| 1.50 |", StringComparison.Ordinal) || l.StartsWith("| 5.00 |", StringComparison.Ordinal)
                 || l.StartsWith("| 9.00 |", StringComparison.Ordinal) || l.StartsWith("| 13.00 |", StringComparison.Ordinal)
                 || l.StartsWith("| 17.00 |", StringComparison.Ordinal) || l.StartsWith("| 21.00 |", StringComparison.Ordinal)).Select(l => l.TrimEnd()).ToList();
             Check(rows.Count == 6, "modload naming: six silence rows, none dropped", rows.Count.ToString());
