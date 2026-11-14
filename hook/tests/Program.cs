@@ -474,6 +474,9 @@ namespace SparkLoad.Hook.Tests
             T.Check("c2c EventSource constructed without exception", Core.Src.ConstructionException == null, Convert.ToString(Core.Src.ConstructionException));
             T.Check("c2d startup path did not load 0Harmony (Harmony is touched only when a patch is applied)",
                 !AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "0Harmony"));
+            int ri = log3.IndexOf("0Harmony fallback resolver registered", StringComparison.Ordinal);
+            int pi = log3.IndexOf(" patch attempt ", StringComparison.Ordinal);
+            T.Check("c2e Lib resolver registered at init, before any patch attempt", Installer.ResolverRegistered && ri >= 0 && (pi < 0 || ri < pi), "ri=" + ri + " pi=" + pi);
             Environment.SetEnvironmentVariable("SPARKLOAD_TARGET_EXE", null);
 
             // --- driven events on a dedicated thread (seq starts at 1) ---

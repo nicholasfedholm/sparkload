@@ -5,6 +5,28 @@ namespace SparkLoad.Launch
 {
     internal static class Native
     {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MEMORYSTATUSEX
+        {
+            public uint dwLength, dwMemoryLoad;
+            public ulong ullTotalPhys, ullAvailPhys, ullTotalPageFile, ullAvailPageFile, ullTotalVirtual, ullAvailVirtual, ullAvailExtendedVirtual;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX m);
+
+        /// <summary>Available physical RAM in GB, or -1 when it cannot be read.</summary>
+        public static double AvailablePhysicalGb()
+        {
+            try
+            {
+                var m = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
+                return GlobalMemoryStatusEx(ref m) ? m.ullAvailPhys / 1073741824.0 : -1;
+            }
+            catch { return -1; }
+        }
+
         public const uint CREATE_SUSPENDED = 0x00000004;
         public const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
         public const uint CREATE_NO_WINDOW = 0x08000000;

@@ -18,7 +18,7 @@ namespace SparkLoad.Analyzer
         private static readonly string[] DefaultNames =
         {
             "Start", "Initialization", "Configuration", "LoadAssets", "AssetsFinalize",
-            "LoadGamePre", "GameReady", "WorldReady", "RunGame"
+            "LoadGamePre", "GameReady", "WorldReady", "RunGame", "Shutdown", "Exit"
         };
 
         public static Dictionary<int, string> Defaults()

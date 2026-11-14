@@ -78,6 +78,7 @@ namespace SparkLoad.Analyzer
             double? offset = null;
             bool sawHello = false;
             long count = 0;
+            long eventsLost = -1;
 
             string spillDir = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(eventsPath)) ?? ".", "events.spill");
             using var spill = new Spill(spillDir, maxEventsPerRun);
@@ -163,6 +164,7 @@ namespace SparkLoad.Analyzer
 
                 try { sessionStartUtc = src.SessionStartTime.ToUniversalTime(); } catch (Exception) { }
                 src.Process();
+                try { eventsLost = src.EventsLost; } catch (Exception) { }
             }
             catch (SpillException sx)
             {
@@ -237,6 +239,7 @@ namespace SparkLoad.Analyzer
                 w.WriteString("note", Txt.Clean(note));
                 w.WriteNumber("events", written);
                 w.WriteNumber("trace_bytes", traceBytes);
+                if (eventsLost >= 0) w.WriteNumber("eventpipe_events_lost", eventsLost);
                 w.WriteString("offset_source", offsetSrc);
                 w.WriteEndObject();
             }

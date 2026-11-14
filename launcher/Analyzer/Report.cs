@@ -84,6 +84,7 @@ namespace SparkLoad.Analyzer
                 new[] { "client level finalize done (log, s)", S(r.FinalizeDoneLogMs) },
                 new[] { "server running (log, s)", S(r.ServerRunningMs) },
             });
+            if (d.Ev.EventPipeLost >= 0) sb.AppendLine().AppendLine("EventPipe events lost: " + Txt.I(d.Ev.EventPipeLost));
         }
 
         private static void Targets(StringBuilder sb, Result r)

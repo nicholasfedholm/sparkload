@@ -27,6 +27,8 @@ namespace SparkLoad.Launch
         public bool Kit;                   // portable audit kit: no job cap, no kill-on-close, wait for the player to close the game, then analyze
         public double DebugHoldBeforeResume;
         public double MaxTraceMb = 1536;   // trace size cap, 0 = off
+        public int EventPipeBufferMb = 1024; // circular EventPipe buffer, clamped 64..4096
+        public double MinFreeRamGb = 8;     // refuse to launch below this much available physical RAM (exit 3)
         public double MaxChildGb = 20;     // per-process commit limit of the job, 0 = off
         public List<string> GameArgs = new List<string>();
 
@@ -88,6 +90,15 @@ namespace SparkLoad.Launch
                     case "--max-child-gb":
                         v = Next();
                         if (v == null || !double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out o.MaxChildGb) || o.MaxChildGb < 0) return "--max-child-gb needs a number >= 0 (0 = off)";
+                        break;
+                    case "--eventpipe-buffer-mb":
+                        v = Next();
+                        if (v == null || !int.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out int bmb)) return "--eventpipe-buffer-mb needs an integer";
+                        o.EventPipeBufferMb = Math.Clamp(bmb, 64, 4096);
+                        break;
+                    case "--min-free-ram-gb":
+                        v = Next();
+                        if (v == null || !double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out o.MinFreeRamGb) || o.MinFreeRamGb < 0) return "--min-free-ram-gb needs a number >= 0";
                         break;
                     case "--debug-hold-before-resume":
                         v = Next();

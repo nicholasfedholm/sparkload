@@ -39,6 +39,7 @@ namespace SparkLoad.Hook
             Ready = true;
             if (off.Length > 0) HookLog.Line("off=" + string.Join(",", off));
             Installer.Start();
+            try { AppDomain.CurrentDomain.ProcessExit += delegate { StatsAll(); }; } catch { }
         }
 
         public static string[] ParseOff(string v)

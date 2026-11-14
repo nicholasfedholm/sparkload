@@ -23,6 +23,7 @@ namespace SparkLoad.Hook
                 if (!Core.On[Mk.ServerPhase]) return;
                 Interlocked.Increment(ref Core.Hits[Mk.ServerPhase]);
                 Emit.Begin(Mk.ServerPhase, q, ToInt(__0), 0, 0, null);
+                if (ToInt(__0) >= 9) Core.StatsAll(); // Shutdown/Exit: final snapshot so Stats are not stale
             }
             catch { Core.Fault(); }
         }

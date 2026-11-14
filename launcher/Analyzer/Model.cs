@@ -355,6 +355,7 @@ namespace SparkLoad.Analyzer
     {
         public bool FilePresent;
         public bool Truncated;
+        public long EventPipeLost = -1; // TraceEvent source EventsLost, -1 = unknown
         public string Note = "";
         public int Count;
         public double MaxT;
@@ -629,6 +630,7 @@ namespace SparkLoad.Analyzer
                     using var md = JsonDocument.Parse(File.ReadAllText(metaPath));
                     ev.Truncated = J.Bool(md.RootElement, "truncated");
                     ev.Note = J.Str(md.RootElement, "note");
+                    if (md.RootElement.TryGetProperty("eventpipe_events_lost", out var elp) && elp.ValueKind == JsonValueKind.Number) ev.EventPipeLost = elp.GetInt64();
                 }
                 catch (Exception) { }
             }

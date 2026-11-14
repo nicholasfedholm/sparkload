@@ -156,6 +156,7 @@ namespace SparkLoad.Hook
             {
                 if (_started) return;
                 _started = true;
+                RegisterResolver(); // before the first patch attempt, so a Lib-only dependency never fails attempt 1
                 AppDomain.CurrentDomain.AssemblyLoad += OnAssemblyLoad;
                 foreach (Assembly a in AppDomain.CurrentDomain.GetAssemblies()) InstallFor(a);
             }
@@ -296,32 +297,36 @@ namespace SparkLoad.Hook
                 Core.Fault();
                 row.LastError = e.GetType().Name + ": " + e.Message;
                 HookLog.Line("patch attempt " + row.Attempts + " " + row.Id + " failed " + row.LastError);
-                if (e is System.IO.FileNotFoundException || e is System.IO.FileLoadException) HarmonyFallback(asm);
+                if (e is System.IO.FileNotFoundException || e is System.IO.FileLoadException) RegisterResolver();
                 if (row.Attempts >= MaxAttempts) Finish(row, "error", row.LastError);
             }
         }
 
-        // Last resort when 0Harmony is not resolvable by the game's own resolver: probe the Lib folders next to the
-        // game assembly and the target exe. Registered only after a real resolve failure, so it never pre-empts the
-        // game's resolver.
+        // Lib-probing resolver. AssemblyResolve only fires after the game's own resolution failed, so registering it
+        // up front never pre-empts the game. Probes <game dir>\Lib and <game dir> (from SPARKLOAD_TARGET_EXE, the
+        // base directory and the requesting assembly) for the missing simple name (0Harmony, OpenTK.*, ...).
         private static bool _fallbackSet;
-        private static void HarmonyFallback(Assembly asm)
+        internal static bool ResolverRegistered { get { return _fallbackSet; } }
+        private static void RegisterResolver()
         {
             if (_fallbackSet) return;
             _fallbackSet = true;
-            var dirs = new List<string>();
-            try { string loc = asm.Location; if (!string.IsNullOrEmpty(loc)) dirs.Add(System.IO.Path.GetDirectoryName(loc)); } catch { }
-            try { string x = Environment.GetEnvironmentVariable("SPARKLOAD_TARGET_EXE"); if (!string.IsNullOrEmpty(x)) dirs.Add(System.IO.Path.GetDirectoryName(x)); } catch { }
             AppDomain.CurrentDomain.AssemblyResolve += delegate (object s, ResolveEventArgs a)
             {
                 try
                 {
-                    if (!a.Name.StartsWith("0Harmony", StringComparison.OrdinalIgnoreCase)) return null;
+                    string simple = new AssemblyName(a.Name).Name;
+                    if (string.IsNullOrEmpty(simple)) return null;
+                    var dirs = new List<string>();
+                    try { string x = Environment.GetEnvironmentVariable("SPARKLOAD_TARGET_EXE"); if (!string.IsNullOrEmpty(x)) dirs.Add(System.IO.Path.GetDirectoryName(x)); } catch { }
+                    try { dirs.Add(AppContext.BaseDirectory); } catch { }
+                    try { Assembly ra = a.RequestingAssembly; if (ra != null && !string.IsNullOrEmpty(ra.Location)) dirs.Add(System.IO.Path.GetDirectoryName(ra.Location)); } catch { }
                     foreach (string d in dirs)
                     {
+                        if (string.IsNullOrEmpty(d)) continue;
                         foreach (string sub in new[] { "Lib", "" })
                         {
-                            string f = System.IO.Path.Combine(d, sub, "0Harmony.dll");
+                            string f = System.IO.Path.Combine(d, sub, simple + ".dll");
                             if (System.IO.File.Exists(f)) { HookLog.Line("0Harmony fallback " + f); return Assembly.LoadFrom(f); }
                         }
                     }

@@ -272,6 +272,8 @@ namespace SparkLoad.Analyzer
                 hits[s.Marker] = hits.TryGetValue(s.Marker, out var h) ? Math.Max(h, s.Hits) : s.Hits;
             var begins = ev.Markers.Where(m => m.Begin).GroupBy(m => m.Marker).ToDictionary(g => g.Key, g => (long)g.Count());
             foreach (var fb in ev.FoldedBegins) begins[fb.Key] = (begins.TryGetValue(fb.Key, out var b0) ? b0 : 0) + fb.Value;
+            long frameSeen = ev.Frames.Count + ev.FrameAggs.Sum(f => f.Count);
+            if (frameSeen > 0) begins["frame"] = (begins.TryGetValue("frame", out var bf) ? bf : 0) + frameSeen;
             var rows = new Dictionary<string, TargetRow>();
             foreach (var p in ev.Patches)
                 rows[p.Marker] = new TargetRow { Marker = p.Marker, Target = p.Target, Status = p.Status, Detail = p.Detail };
@@ -281,7 +283,7 @@ namespace SparkLoad.Analyzer
             {
                 row.Begins = begins.TryGetValue(row.Marker, out var b) ? b : 0;
                 if (hits.TryGetValue(row.Marker, out var h)) row.Hits = h;
-                long eff = row.Hits ?? row.Begins;
+                long eff = Math.Max(row.Hits ?? 0, row.Begins);
                 string st = row.Status.ToLowerInvariant();
                 if (st == "ok" && eff == 0) row.Flag = "ZERO-HIT";
                 else if (st == "missing" || st == "mismatch" || st == "error") row.Flag = "NOT-ACTIVE";
@@ -765,6 +767,8 @@ namespace SparkLoad.Analyzer
             {
                 double mx = matched.Count > 0 ? matched.Max(x => Math.Abs(x.DeltaMs!.Value)) : 0;
                 g6.Text = "max_delta_ms=" + (matched.Count > 0 ? Txt.F1(mx) : "n/a") + " phases=" + Txt.I(matched.Count);
+                var unm = G6.Where(x => !x.Ok).Select(x => "phase" + Txt.I(x.Value) + "(" + (string.IsNullOrEmpty(x.Note) ? "delta over limit" : x.Note) + ")").ToList();
+                if (unm.Count > 0) g6.Text += " unmatched=" + string.Join(",", unm);
                 g6.Pass = matched.Count > 0 && G6.All(x => x.Ok);
             }
             else { g6.Text = "max_delta_ms=n/a phases=0"; g6.Pass = false; }

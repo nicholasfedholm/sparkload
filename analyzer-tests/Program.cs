@@ -62,6 +62,7 @@ namespace SparkLoad.AnalyzerTests
                 TestSilenceNaming();
                 TestOverrides();
                 TestCompare();
+                TestP2();
                 TestRealTrace();
             }
             catch (Exception ex)

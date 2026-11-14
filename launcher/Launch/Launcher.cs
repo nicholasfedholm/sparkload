@@ -252,6 +252,14 @@ namespace SparkLoad.Launch
                 return 3;
             }
 
+            // 1b. free-RAM floor: never kill anything, just refuse
+            double freeGb = Native.AvailablePhysicalGb();
+            if (freeGb >= 0 && freeGb < o.MinFreeRamGb)
+            {
+                log.Line("BLOCKED: free RAM " + freeGb.ToString("0.0", CultureInfo.InvariantCulture) + " GB below floor " + o.MinFreeRamGb.ToString("0.#", CultureInfo.InvariantCulture) + " GB");
+                return 3;
+            }
+
             string exeFull;
             try { exeFull = Path.GetFullPath(o.Exe); } catch { log.Line("bad --exe path"); return 2; }
             string arm = o.Arm ?? (o.Mode == "passive" ? "V" : o.Mode == "deep" ? "D" : "O");
@@ -275,6 +283,7 @@ namespace SparkLoad.Launch
             bool deep = o.Mode == "deep";
             bool traced = o.Mode != "passive";
             log.Line("sparkload " + Version + " run " + runId + " arm=" + arm + " mode=" + o.Mode + " exe=" + exeFull);
+            log.Line("eventpipe buffer " + o.EventPipeBufferMb.ToString(CultureInfo.InvariantCulture) + " MB (clamp 64..4096), min free RAM floor " + o.MinFreeRamGb.ToString("0.#", CultureInfo.InvariantCulture) + " GB");
 
             Regex pattern = new Regex(o.FinalizePattern, RegexOptions.CultureInvariant);
             var tailer = new LogTailer(Path.Combine(runDir, "logtail.csv"), o.Data, o.LauncherLog, pattern, o.FinalizeFile, s => log.Line(s));
@@ -293,7 +302,7 @@ namespace SparkLoad.Launch
                 };
                 if (deep) providers.Add(new TraceProvider { Name = "Microsoft-DotNETCore-SampleProfiler", Keywords = ulong.MaxValue, Level = 4 });
                 diag = new DiagServer(pipeName, Stopwatch.GetTimestamp(), Path.Combine(runDir, "ipc.log"), Path.Combine(runDir, "raw.nettrace"),
-                    providers, deep, deep, 256, true, s => log.Line(s));
+                    providers, deep, deep, o.EventPipeBufferMb, true, s => log.Line(s));
                 diag.HoldBeforeResumeSeconds = (int)Math.Ceiling(o.DebugHoldBeforeResume);
                 diag.MaxTraceBytes = o.MaxTraceMb > 0 ? (long)(o.MaxTraceMb * 1048576.0) : 0;
                 try
@@ -400,6 +409,9 @@ namespace SparkLoad.Launch
                 ["trace_bytes"] = null,
                 ["trace_end"] = null,
                 ["child_exit_code"] = null,
+                ["eventpipe_buffer_mb"] = traced ? o.EventPipeBufferMb : (object?)null,
+                ["min_free_ram_gb"] = o.MinFreeRamGb,
+                ["eventpipe_events_lost"] = null,
                 ["max_trace_mb"] = o.MaxTraceMb,
                 ["max_child_gb"] = o.Kit ? 0 : o.MaxChildGb,
                 ["kit_mode"] = o.Kit,
@@ -523,6 +535,23 @@ namespace SparkLoad.Launch
                 analyzerRc = 6;
                 log.Line("analyzer failed: " + ex.Message);
             }
+
+            // EventPipe drop count (TraceEvent EventsLost) from the converter's meta file; separate from the seq-gap `lost`.
+            try
+            {
+                string metaP = Path.Combine(runDir, "events.meta.json");
+                if (File.Exists(metaP))
+                {
+                    using var md = System.Text.Json.JsonDocument.Parse(File.ReadAllText(metaP));
+                    if (md.RootElement.TryGetProperty("eventpipe_events_lost", out var el) && el.ValueKind == System.Text.Json.JsonValueKind.Number)
+                    {
+                        rj["eventpipe_events_lost"] = el.GetInt64();
+                        log.Line("EventPipe events lost: " + el.GetInt64().ToString(CultureInfo.InvariantCulture));
+                        WriteRunJson(runJsonPath, rj);
+                    }
+                }
+            }
+            catch (Exception ex) { log.Line("eventpipe_events_lost not recorded: " + ex.Message); }
 
             if (!string.IsNullOrWhiteSpace(o.ManifestCmd))
             {
