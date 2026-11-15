@@ -214,6 +214,81 @@ namespace SparkLoad.Launch
         const int LimitFlagsOffset = 16;
         const int ProcessMemoryLimitOffset = 112;
 
+        /// <summary>
+        /// Runs "sparkload analyze --run dir" as a child of this process (stdout and stderr go to launcher.log with the
+        /// usual "analyzer: " prefix) and kills that child, and only that child, when it outlives --analyzer-timeout-s.
+        /// Returns 0, 6 (failed or timed out) or 7 (memory ceiling hit).
+        /// </summary>
+        private static int RunAnalyzerChild(string runDir, RunOptions o, RunLog log)
+        {
+            string? self = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(self) || !File.Exists(self))
+            {
+                log.Line("analyzer: own executable path unknown, running in process (no watchdog)");
+                try
+                {
+                    var tw = new LineWriter(s => log.Line("analyzer: " + s));
+                    int rc0 = SparkLoad.Analyzer.AnalyzerMain.Run(runDir, o.Compare, tw);
+                    tw.Flush();
+                    if (rc0 != 0) { log.Line("analyzer returned " + rc0.ToString(CultureInfo.InvariantCulture)); return 6; }
+                    return 0;
+                }
+                catch (Exception ex) { log.Line("analyzer failed: " + ex.Message); return 6; }
+            }
+
+            var psi = new ProcessStartInfo(self)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+            };
+            psi.ArgumentList.Add("analyze");
+            psi.ArgumentList.Add("--run");
+            psi.ArgumentList.Add(runDir);
+            if (o.Compare != null) { psi.ArgumentList.Add("--compare"); psi.ArgumentList.Add(o.Compare); }
+            psi.ArgumentList.Add("--max-analyzer-mb");
+            psi.ArgumentList.Add(o.MaxAnalyzerMb.ToString(CultureInfo.InvariantCulture));
+
+            try
+            {
+                using var p = new Process { StartInfo = psi };
+                p.OutputDataReceived += (_, e) => { if (e.Data != null) log.Line("analyzer: " + e.Data); };
+                p.ErrorDataReceived += (_, e) => { if (e.Data != null) log.Line("analyzer: " + e.Data); };
+                var sw = Stopwatch.StartNew();
+                p.Start();
+                int pid = p.Id;
+                p.BeginOutputReadLine();
+                p.BeginErrorReadLine();
+                log.Line("analyzer: child pid " + pid.ToString(CultureInfo.InvariantCulture) + ", memory ceiling "
+                    + (o.MaxAnalyzerMb > 0 ? o.MaxAnalyzerMb.ToString(CultureInfo.InvariantCulture) + " MB" : "off") + ", watchdog "
+                    + (o.AnalyzerTimeoutS > 0 ? o.AnalyzerTimeoutS.ToString("0.#", CultureInfo.InvariantCulture) + " s" : "off"));
+                int waitMs = o.AnalyzerTimeoutS > 0 ? (int)Math.Min(int.MaxValue, o.AnalyzerTimeoutS * 1000.0) : Timeout.Infinite;
+                if (!p.WaitForExit(waitMs))
+                {
+                    log.Line("analyzer: WATCHDOG: child pid " + pid.ToString(CultureInfo.InvariantCulture) + " still running after "
+                        + o.AnalyzerTimeoutS.ToString("0.#", CultureInfo.InvariantCulture) + " s, killing it (its own process tree only)");
+                    try { p.Kill(entireProcessTree: true); } catch (Exception ex) { log.Line("analyzer: kill failed: " + ex.Message); }
+                    p.WaitForExit(10000);
+                    return 6;
+                }
+                p.WaitForExit(); // drains the redirected output
+                int rc = p.ExitCode;
+                log.Line("analyzer: child exit " + rc.ToString(CultureInfo.InvariantCulture) + " after " + sw.Elapsed.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) + " s");
+                if (rc == 0) return 0;
+                if (rc == AnalyzerGuard.ExitCeiling) { log.Line("analyzer: memory ceiling hit (exit 7)"); return AnalyzerGuard.ExitCeiling; }
+                log.Line("analyzer returned " + rc.ToString(CultureInfo.InvariantCulture));
+                return 6;
+            }
+            catch (Exception ex)
+            {
+                log.Line("analyzer failed to start: " + ex.Message);
+                return 6;
+            }
+        }
+
         /// <summary>Process memory limit only (no kill-on-close); used by the analyzer self-ceiling.</summary>
         internal static bool SetJobMemoryLimit(IntPtr job, ulong processMemoryBytes) => SetJobLimits(job, false, processMemoryBytes);
 
@@ -301,7 +376,7 @@ namespace SparkLoad.Launch
                 var providers = new List<TraceProvider>
                 {
                     new TraceProvider { Name = "SparkLoad", Keywords = ulong.MaxValue, Level = 4 },
-                    new TraceProvider { Name = "Microsoft-Windows-DotNETRuntime", Keywords = 0x1UL | 0x8UL | 0x8000UL | (deep ? 0x10UL | 0x20UL | 0x40000000UL : 0), Level = 4 },
+                    new TraceProvider { Name = "Microsoft-Windows-DotNETRuntime", Keywords = 0x1UL | 0x8UL | (deep ? 0x8000UL | 0x10UL | 0x20UL | 0x40000000UL : 0), Level = 4 },
                 };
                 if (deep) providers.Add(new TraceProvider { Name = "Microsoft-DotNETCore-SampleProfiler", Keywords = ulong.MaxValue, Level = 4 });
                 diag = new DiagServer(pipeName, Stopwatch.GetTimestamp(), Path.Combine(runDir, "ipc.log"), Path.Combine(runDir, "raw.nettrace"),
@@ -524,20 +599,10 @@ namespace SparkLoad.Launch
                 }
             }
 
-            // analyzer
-            int analyzerRc = 0;
-            try
-            {
-                var tw = new LineWriter(s => log.Line("analyzer: " + s));
-                int rc = SparkLoad.Analyzer.AnalyzerMain.Run(runDir, o.Compare, tw);
-                tw.Flush();
-                if (rc != 0) { analyzerRc = 6; log.Line("analyzer returned " + rc.ToString(CultureInfo.InvariantCulture)); }
-            }
-            catch (Exception ex)
-            {
-                analyzerRc = 6;
-                log.Line("analyzer failed: " + ex.Message);
-            }
+            // analyzer: a child process ("sparkload analyze") with its own memory ceiling and a wall-clock watchdog, so a
+            // runaway analysis can never take the launcher (or the machine) down with it. It starts only after the
+            // game is gone in --then kill mode. Exit 7 = analyzer memory ceiling hit; anything else nonzero = 6.
+            int analyzerRc = RunAnalyzerChild(runDir, o, log);
 
             // EventPipe drop count (TraceEvent EventsLost) from the converter's meta file; separate from the seq-gap `lost`.
             try

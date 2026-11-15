@@ -30,6 +30,8 @@ namespace SparkLoad.Launch
         public int EventPipeBufferMb = 1024; // circular EventPipe buffer, clamped 64..4096
         public double MinFreeRamGb = 8;     // refuse to launch below this much available physical RAM (exit 3)
         public double MaxChildGb = 20;     // per-process commit limit of the job, 0 = off
+        public long MaxAnalyzerMb = 4096;  // memory ceiling of the analyzer child process, 0 = off
+        public double AnalyzerTimeoutS = 1800; // the analyzer child is killed after this long, 0 = no limit
         public List<string> GameArgs = new List<string>();
 
         public static string[] SplitGuard(string s)
@@ -90,6 +92,14 @@ namespace SparkLoad.Launch
                     case "--max-child-gb":
                         v = Next();
                         if (v == null || !double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out o.MaxChildGb) || o.MaxChildGb < 0) return "--max-child-gb needs a number >= 0 (0 = off)";
+                        break;
+                    case "--max-analyzer-mb":
+                        v = Next();
+                        if (v == null || !long.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out o.MaxAnalyzerMb) || o.MaxAnalyzerMb < 0) return "--max-analyzer-mb needs an integer >= 0 (0 = off)";
+                        break;
+                    case "--analyzer-timeout-s":
+                        v = Next();
+                        if (v == null || !double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out o.AnalyzerTimeoutS) || o.AnalyzerTimeoutS < 0) return "--analyzer-timeout-s needs a number >= 0 (0 = no limit)";
                         break;
                     case "--eventpipe-buffer-mb":
                         v = Next();
