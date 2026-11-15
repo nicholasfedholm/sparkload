@@ -400,6 +400,15 @@ namespace SparkLoad.Analyzer
         public bool HasMarkers => MarkerEventCount > 0;
 
         public const string SuppressedPrefix = "column.load.suppressed ";
+        /// <summary>Agg (id 11) keys: "column.load <x> <z>" and "exception <type>". The last event per key holds the totals.</summary>
+        public const string AggColumnPrefix = "column.load ";
+        public const string AggExceptionPrefix = "exception ";
+        /// <summary>Total and max ms of the calls the hook aggregated per column (Agg events; absent in older traces).</summary>
+        public readonly Dictionary<(long X, long Z), (double SumMs, double MaxMs)> SuppressedMsByColumn = new Dictionary<(long, long), (double, double)>();
+        /// <summary>First-chance exception totals per type counted in the game process (Agg events).</summary>
+        public readonly Dictionary<string, long> HookExceptionTypes = new Dictionary<string, long>();
+        /// <summary>True when the exception figures came from the hook's Agg events (no runtime exception events in the trace).</summary>
+        public bool ExceptionsFromHook;
 
         /// <summary>Memory caps for the per-event lists. Past a cap the analyzer keeps counting into an "other" bucket
         /// (column.load: the fold totals; other markers: a dropped count) and the report says so. No fixture reaches them.</summary>
@@ -591,6 +600,27 @@ namespace SparkLoad.Analyzer
                                         ev.Stats.Add(new StatEv { T = t, Marker = smk, Hits = shits });
                                         break;
                                     }
+                                case "Agg":
+                                    {
+                                        string ak = J.Str(f, "key");
+                                        long acount = J.Long(f, "count") ?? 0;
+                                        if (ak.StartsWith(AggColumnPrefix, StringComparison.Ordinal))
+                                        {
+                                            var parts = ak.Substring(AggColumnPrefix.Length).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                                            if (parts.Length == 2 && long.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out long ax)
+                                                && long.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out long az))
+                                            {
+                                                ev.SuppressedByColumn[(ax, az)] = acount;
+                                                ev.SuppressedMsByColumn[(ax, az)] = (J.Dbl(f, "sum_ms") ?? 0, J.Dbl(f, "max_ms") ?? 0);
+                                            }
+                                        }
+                                        else if (ak.StartsWith(AggExceptionPrefix, StringComparison.Ordinal))
+                                        {
+                                            string et = ak.Substring(AggExceptionPrefix.Length);
+                                            if (et.Length > 0) ev.HookExceptionTypes[et] = acount;
+                                        }
+                                        break;
+                                    }
                                 case "Frame":
                                     {
                                         double dur = J.Dbl(f, "dur_ms") ?? 0;
@@ -662,6 +692,17 @@ namespace SparkLoad.Analyzer
             {
                 if (finished) return;
                 finished = true;
+                // Exceptions: runtime events when the trace has them (--deep, or traces from before the hook counted
+                // them); otherwise the hook's per-type Agg totals.
+                if (ev.ExceptionCount == 0 && ev.HookExceptionTypes.Count > 0)
+                {
+                    foreach (var kv in ev.HookExceptionTypes)
+                    {
+                        ev.ExceptionTypes[kv.Key] = kv.Value;
+                        ev.ExceptionCount += kv.Value;
+                    }
+                    ev.ExceptionsFromHook = true;
+                }
             // column.load spans still open at the end: kept ones stay open spans, the rest count with T1 = end of trace.
             foreach (var st in loadStacks.Values)
                 foreach (var s in st)

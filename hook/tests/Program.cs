@@ -215,8 +215,9 @@ namespace SparkLoad.Hook.Tests
             new[] { "tid", "seq", "qpc", "count", "sumTicks", "maxTicks", "over50" },
             new[] { "tid", "seq", "qpc", "frameIndex" },
             new[] { "marker", "hits" },
+            new[] { "key", "count", "sumTicks", "maxTicks" },
         };
-        static readonly string[] EventNames = { null, "Hello", "MarkerDef", "Begin", "End", "Thread", "Patch", "Frame", "FrameAgg", "Playable", "Stats" };
+        static readonly string[] EventNames = { null, "Hello", "MarkerDef", "Begin", "End", "Thread", "Patch", "Frame", "FrameAgg", "Playable", "Stats", "Agg" };
 
         static readonly string[] SpecMarkers =
         {
@@ -541,7 +542,7 @@ namespace SparkLoad.Hook.Tests
                 lateEv.Count(e => e.Id == 1) >= 1 && lateEv.Count(e => e.Id == 2) >= 37);
 
             var all = ev.Concat(lateEv).ToList();
-            for (int id = 1; id <= 10; id++)
+            for (int id = 1; id <= 11; id++)
             {
                 Rec first = all.FirstOrDefault(e => e.Id == id);
                 bool have = first != null;
@@ -625,10 +626,10 @@ namespace SparkLoad.Hook.Tests
                 {
                     T.Check("c16 nettrace parsed", false, e.GetType().Name + " " + e.Message);
                 }
-                T.Note("SparkLoad events in nettrace: " + totalNt + " (named 1..10: " + np.Count + ")");
+                T.Note("SparkLoad events in nettrace: " + totalNt + " (named 1..11: " + np.Count + ")");
                 // everything written after the session started is in the in-process capture (cap, created after Initialize) plus the
                 // definitions emitted during Initialize, which only the session saw: compare per id against cap + late replay.
-                for (int id = 1; id <= 10; id++)
+                for (int id = 1; id <= 11; id++)
                 {
                     Rec first = np.FirstOrDefault(e => e.Id == id);
                     T.Check("c17." + id + " nettrace: event " + id + " " + EventNames[id] + " present, payload names in SPEC order",
@@ -646,7 +647,7 @@ namespace SparkLoad.Hook.Tests
                 T.Check("c18 every in-process event (" + ev.Count + ") is in the nettrace with identical positional payload", missing == 0, "missing " + missing + ": " + string.Join(" || ", missList));
                 // per-id counts of in-process events must not exceed nettrace counts
                 var shortIds = new List<string>();
-                for (int id = 1; id <= 10; id++)
+                for (int id = 1; id <= 11; id++)
                 {
                     int a = ev.Count(e => e.Id == id), n2 = np.Count(e => e.Id == id);
                     if (n2 < a) shortIds.Add(id + ":" + n2 + "<" + a);
@@ -793,13 +794,30 @@ namespace SparkLoad.Hook.Tests
                 int slowE = thr.Count(e => e.Id == 4 && Vals(e, "markerId") == clId && Vals(e, "a") == "777");
                 T.Check("e1 throttle: fast column emits its first 4 spans (a few later ones only if a call took 1 ms), Begin = End", fastB >= 4 && fastB <= 10 && fastB == fastE, fastB + "/" + fastE);
                 T.Check("e2 throttle: every slow (5 ms) call is emitted, none suppressed", slowB == 10 && slowE == 10, slowB + "/" + slowE);
-                var supEv = thr.Where(e => e.Id == 10 && Vals(e, "marker") == "column.load.suppressed 500 600").ToList();
-                long lastSup = supEv.Count > 0 ? long.Parse(Vals(supEv.Last(), "hits"), CultureInfo.InvariantCulture) : -1;
-                T.Check("e3 throttle: suppressed total per column reaches Stats (power-of-two crossing and StatsAll), last = calls - emitted",
+                var supEv = thr.Where(e => e.Id == 11 && Vals(e, "key") == "column.load 500 600").ToList();
+                long lastSup = supEv.Count > 0 ? long.Parse(Vals(supEv.Last(), "count"), CultureInfo.InvariantCulture) : -1;
+                T.Check("e3 throttle: suppressed total per column reaches Agg (power-of-two crossing and StatsAll), last = calls - emitted",
                     supEv.Count >= 2 && lastSup == 40 - fastB, "events=" + supEv.Count + " last=" + lastSup + " expected=" + (40 - fastB));
-                var slowSup = thr.Where(e => e.Id == 10 && Vals(e, "marker") == "column.load.suppressed 777 888").ToList();
-                T.Check("e4 throttle: slow column's final suppressed total is 0", slowSup.Count > 0 && Vals(slowSup.Last(), "hits") == "0", slowSup.Count == 0 ? "none" : Vals(slowSup.Last(), "hits"));
+                long supSum = supEv.Count > 0 ? long.Parse(Vals(supEv.Last(), "sumTicks"), CultureInfo.InvariantCulture) : -1;
+                long supMax = supEv.Count > 0 ? long.Parse(Vals(supEv.Last(), "maxTicks"), CultureInfo.InvariantCulture) : -1;
+                T.Check("e3b throttle: Agg carries the suppressed calls' total and max ticks (0 < max <= sum, max under 1 ms)",
+                    supSum > 0 && supMax > 0 && supMax <= supSum && supMax < ColumnThrottle.SlowTicks, "sum=" + supSum + " max=" + supMax);
+                T.Check("e3c throttle: no Stats column.load.suppressed events from this hook (Agg replaces them)",
+                    !thr.Any(e => e.Id == 10 && Vals(e, "marker").StartsWith("column.load.suppressed", StringComparison.Ordinal)));
+                var slowSup = thr.Where(e => e.Id == 11 && Vals(e, "key") == "column.load 777 888").ToList();
+                T.Check("e4 throttle: slow column's final suppressed total is 0 with 0 ticks", slowSup.Count > 0 && Vals(slowSup.Last(), "count") == "0" && Vals(slowSup.Last(), "sumTicks") == "0",
+                    slowSup.Count == 0 ? "none" : Vals(slowSup.Last(), "count") + "/" + Vals(slowSup.Last(), "sumTicks"));
                 T.Check("e5 throttle: Hits counts every call (50)", Interlocked.Read(ref Core.Hits[Mk.ColumnLoad]) - hitsBefore == 50, (Interlocked.Read(ref Core.Hits[Mk.ColumnLoad]) - hitsBefore).ToString());
+
+                // first-chance exceptions: counted per type in the hook, reported as Agg "exception <type>"
+                int before1 = cap.Snapshot().Count;
+                for (int i = 0; i < 5; i++) { try { throw new TimeZoneNotFoundException("hooktest " + i); } catch (TimeZoneNotFoundException) { } }
+                Core.StatsAll();
+                Thread.Sleep(200);
+                var exAgg = cap.Snapshot().Skip(before1).Where(e => e.Id == 11 && Vals(e, "key") == "exception System.TimeZoneNotFoundException").ToList();
+                T.Check("e6 exceptions: Agg per type, last count = 5 throws, sum and max 0 (power-of-two reports 1, 2, 4 plus StatsAll)",
+                    exAgg.Count >= 2 && Vals(exAgg.Last(), "count") == "5" && Vals(exAgg.Last(), "sumTicks") == "0" && Vals(exAgg.Last(), "maxTicks") == "0",
+                    "events=" + exAgg.Count + (exAgg.Count > 0 ? " last=" + Vals(exAgg.Last(), "count") : ""));
             }
 
             // block-list wait: timed without a transpiler. Not yet set: Begin(wait,a=0), pool End(set,a=0), End(wait,a=0).

@@ -39,6 +39,7 @@ namespace SparkLoad.Hook
             Ready = true;
             if (off.Length > 0) HookLog.Line("off=" + string.Join(",", off));
             Installer.Start();
+            if (!IsOff("exceptions", off)) ExceptionCounter.Install();
             try { AppDomain.CurrentDomain.ProcessExit += delegate { StatsAll(); }; } catch { }
         }
 
@@ -97,6 +98,7 @@ namespace SparkLoad.Hook
                 for (int i = 1; i <= Mk.Count; i++) s.Stats(Mk.Names[i], Interlocked.Read(ref Hits[i]));
                 s.Stats("hook.faults", Interlocked.Read(ref Faults));
                 ColumnThrottle.FlushStats(s);
+                ExceptionCounter.FlushStats(s);
             }
             catch { Fault(); }
         }

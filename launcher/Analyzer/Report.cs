@@ -165,7 +165,11 @@ namespace SparkLoad.Analyzer
             if (c.LoadsFolded > 0 || c.HookSuppressed > 0)
                 sb.AppendLine("- column.load detail: " + c.LoadsKept + " spans listed one by one (the first " + LoadFold.KeepFirst + " per column and every span of "
                     + LoadFold.SlowMs.ToString("0.#", CultureInfo.InvariantCulture) + " ms or more), " + c.LoadsFolded + " only counted in the totals above; the hook itself left out "
-                    + c.HookSuppressed + " calls over " + c.HookSuppressedColumns + " columns (Stats column.load.suppressed). Gap figures for column.load use the listed spans only.");
+                    + c.HookSuppressed + " calls over " + c.HookSuppressedColumns + " columns"
+                    + (c.HookSuppressedTimed
+                        ? " (hook Agg; they took " + Txt.Sec(c.HookSuppressedMs) + " s in total, longest " + c.HookSuppressedMaxMs.ToString("0.###", CultureInfo.InvariantCulture) + " ms)"
+                        : " (Stats column.load.suppressed)")
+                    + ". Gap figures for column.load use the listed spans only.");
             sb.AppendLine();
             if (c.Passes.Count > 0)
                 Table(sb, new[] { "pass", "spans", "columns", "total ms", "mean ms", "max ms" },
@@ -240,7 +244,7 @@ namespace SparkLoad.Analyzer
             double totalPause = ev.Pauses.Sum(p => p.Dur);
             sb.AppendLine("- GCs: " + ev.Gcs.Count + " (gen0 " + ev.Gcs.Count(g => g.Gen == 0) + ", gen1 " + ev.Gcs.Count(g => g.Gen == 1) + ", gen2 " + ev.Gcs.Count(g => g.Gen >= 2) + ")");
             sb.AppendLine("- suspension pauses: " + ev.Pauses.Count + ", total " + Txt.F1(totalPause) + " ms, max " + Txt.F1(ev.Pauses.Count > 0 ? ev.Pauses.Max(p => p.Dur) : 0) + " ms");
-            sb.AppendLine("- assembly loads: " + ev.AssemblyLoads + ", exceptions thrown: " + ev.ExceptionCount);
+            sb.AppendLine("- assembly loads: " + ev.AssemblyLoads + ", exceptions thrown: " + ev.ExceptionCount + (ev.ExceptionsFromHook ? " (first-chance, counted by the hook)" : ""));
             if (ev.ExceptionCount > 0)
                 sb.AppendLine("- top exception types: " + string.Join(", ", ev.ExceptionTypes.OrderByDescending(kv => kv.Value).Take(5).Select(kv => kv.Key + " x" + kv.Value)));
             sb.AppendLine();

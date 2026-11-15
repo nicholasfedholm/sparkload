@@ -146,5 +146,15 @@ namespace SparkLoad.Hook
             if (!IsEnabled()) return;
             Emit(10, "SL", new long[] { hits }, new[] { marker });
         }
+
+        // Periodic per-key summary of a high-rate source (count, total and max duration in QPC ticks; 0 when not timed).
+        // Keys: "column.load <x> <z>" (calls the column throttle did not emit as spans) and "exception <Type>"
+        // (first-chance exceptions per type). Each report is cumulative: the last event per key holds the totals.
+        [Event(11, Level = EventLevel.Informational)]
+        public void Agg(string key, long count, long sumTicks, long maxTicks)
+        {
+            if (!IsEnabled()) return;
+            Emit(11, "SLLL", new long[] { count, sumTicks, maxTicks }, new[] { key });
+        }
     }
 }

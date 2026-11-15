@@ -175,7 +175,7 @@ namespace SparkLoad.Hook
 
         // ---- column.load: a = ChunkX, b = ChunkZ, c = the int stage argument (replaces the from-db meaning in SPEC)
         // Throttled per column (see ColumnThrottle): __state 0 = Begin already emitted, else the prefix QPC of a
-        // suppressed call. Hits still counts every call.
+        // suppressed call (fast ones go into the column's Agg count/total/max). Hits still counts every call.
         public static void ColLoad_Pre(object __0, int __1, out long __state)
         {
             __state = 0;
@@ -203,8 +203,13 @@ namespace SparkLoad.Hook
                     Emit.End(Mk.ColumnLoad, q, Accessors.ReqX(__0), Accessors.ReqZ(__0), __1, null);
                     return;
                 }
-                if (q - __state < ColumnThrottle.SlowTicks) return; // suppressed and fast: nothing to do
                 int x = Accessors.ReqX(__0), z = Accessors.ReqZ(__0);
+                long d = q - __state;
+                if (d < ColumnThrottle.SlowTicks)
+                {
+                    ColumnThrottle.Fast(ColumnThrottle.Slot(x, z), d); // suppressed and fast: into the column's Agg totals
+                    return;
+                }
                 ColumnThrottle.LateEmitted(ColumnThrottle.Slot(x, z));
                 Emit.Begin(Mk.ColumnLoad, __state, x, z, __1, null);
                 Emit.End(Mk.ColumnLoad, q, x, z, __1, null);

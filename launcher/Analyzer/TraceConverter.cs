@@ -56,6 +56,7 @@ namespace SparkLoad.Analyzer
             (8, "FrameAgg", new[] { ("tid", false), ("seq", false), ("qpc", false), ("count", false), ("sumTicks", false), ("maxTicks", false), ("over50", false) }),
             (9, "Playable", new[] { ("tid", false), ("seq", false), ("qpc", false), ("frameIndex", false) }),
             (10, "Stats", new[] { ("marker", true), ("hits", false) }),
+            (11, "Agg", new[] { ("key", true), ("count", false), ("sumTicks", false), ("maxTicks", false) }),
         };
 
         // Sorted runs of at most this many events are spilled to temp files, then merged k-way by (T, Order).
@@ -121,7 +122,7 @@ namespace SparkLoad.Analyzer
                 {
                     if (r.HasQpc && run.T0Qpc > 0) { r.T = (r.Qpc - run.T0Qpc) * 1000.0 / freq; r.HasT = true; }
                     if (r.Name == "Frame") Add(r, "dur_ms", FieldLong(r, "durTicks") * 1000.0 / freq);
-                    else if (r.Name == "FrameAgg")
+                    else if (r.Name == "FrameAgg" || r.Name == "Agg")
                     {
                         Add(r, "sum_ms", FieldLong(r, "sumTicks") * 1000.0 / freq);
                         Add(r, "max_ms", FieldLong(r, "maxTicks") * 1000.0 / freq);

@@ -4,17 +4,18 @@ using System.Threading;
 
 namespace SparkLoad.Hook
 {
-    // column.load throttle. The server chunk thread calls loadOrGenerateChunkColumn_OnChunkThread tens of
-    // thousands of times per column (59.4M spans on 3,024 columns in one Earth run). Per (x,z) column the first
-    // KeepFirst calls always emit a span, and so does any later call that takes at least one millisecond (its
-    // Begin is written late, from the postfix, with the QPC taken in the prefix). The rest are counted only.
-    // The suppressed total per column leaves through the existing Stats event as marker
-    // "column.load.suppressed <x> <z>" (hits = suppressed so far): at each power-of-two call count past
-    // KeepFirst, and for every column again in Core.StatsAll. The suppressed path allocates nothing.
+    // column.load throttle and source-side aggregation. The server chunk thread calls
+    // loadOrGenerateChunkColumn_OnChunkThread tens of thousands of times per column (59.4M spans on 3,024 columns
+    // in one Earth run). Per (x,z) column the first KeepFirst calls always emit a span, and so does any later call
+    // that takes at least one millisecond (its Begin is written late, from the postfix, with the QPC taken in the
+    // prefix). The rest are aggregated per column: count, total ticks and max ticks of the calls that were not
+    // emitted. The summary leaves as an Agg event (id 11) keyed "column.load <x> <z>": at each power-of-two call
+    // count past KeepFirst, and for every column again in Core.StatsAll. The last Agg per column holds the totals.
+    // Older hooks sent only the count, as Stats "column.load.suppressed <x> <z>"; the analyzer reads both. The suppressed path allocates nothing.
     internal static class ColumnThrottle
     {
         public const int KeepFirst = 4;
-        public const string StatsPrefix = "column.load.suppressed";
+        public const string AggPrefix = "column.load";
 
         private const int Cap = 1 << 16;
         private const int Mask = Cap - 1;
@@ -24,6 +25,8 @@ namespace SparkLoad.Hook
         private static readonly long[] Keys = NewKeys();
         private static readonly int[] Seen = new int[Cap];
         private static readonly int[] Emitted = new int[Cap];
+        private static readonly long[] SumTicks = new long[Cap];
+        private static readonly long[] MaxTicks = new long[Cap];
 
         // Spans at least this long are always emitted (1 ms).
         public static readonly long SlowTicks = Math.Max(1, Stopwatch.Frequency / 1000);
@@ -74,6 +77,20 @@ namespace SparkLoad.Hook
             if (slot >= 0) Interlocked.Increment(ref Emitted[slot]);
         }
 
+        // A suppressed call that stayed fast: its duration goes into the column's totals.
+        public static void Fast(int slot, long ticks)
+        {
+            if (slot < 0) return;
+            Interlocked.Add(ref SumTicks[slot], ticks);
+            long m = Volatile.Read(ref MaxTicks[slot]);
+            while (ticks > m)
+            {
+                long prev = Interlocked.CompareExchange(ref MaxTicks[slot], ticks, m);
+                if (prev == m) break;
+                m = prev;
+            }
+        }
+
         public static long Suppressed(int slot)
         {
             long d = (long)Volatile.Read(ref Seen[slot]) - Volatile.Read(ref Emitted[slot]);
@@ -86,13 +103,14 @@ namespace SparkLoad.Hook
             {
                 SparkLoadSource s = Core.Src;
                 if (s != null && s.IsEnabled())
-                    s.Stats(StatsPrefix + " " + x.ToString() + " " + z.ToString(), Suppressed(slot));
+                    s.Agg(AggPrefix + " " + x.ToString() + " " + z.ToString(), Suppressed(slot), Volatile.Read(ref SumTicks[slot]), Volatile.Read(ref MaxTicks[slot]));
             }
             catch { Core.Fault(); }
         }
 
-        // One Stats event per column called more than KeepFirst times (the last value per column is the total; a
-        // mid-run report can count a still-running call as suppressed). Low rate: StatsAll runs a few times per run.
+        // One Agg event per column called more than KeepFirst times (the last value per column is the total; a
+        // mid-run report can count a still-running call as suppressed, without its ticks). Low rate: StatsAll runs a
+        // few times per run.
         public static void FlushStats(SparkLoadSource s)
         {
             for (int i = 0; i < Cap; i++)
@@ -100,8 +118,8 @@ namespace SparkLoad.Hook
                 long key = Volatile.Read(ref Keys[i]);
                 if (key == Empty) continue;
                 if (Volatile.Read(ref Seen[i]) <= KeepFirst) continue;
-                long sup = Suppressed(i);
-                s.Stats(StatsPrefix + " " + ((int)(key >> 32)).ToString() + " " + ((int)(key & 0xFFFFFFFFL)).ToString(), sup);
+                s.Agg(AggPrefix + " " + ((int)(key >> 32)).ToString() + " " + ((int)(key & 0xFFFFFFFFL)).ToString(),
+                    Suppressed(i), Volatile.Read(ref SumTicks[i]), Volatile.Read(ref MaxTicks[i]));
             }
         }
     }

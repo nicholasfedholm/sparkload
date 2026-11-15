@@ -56,6 +56,8 @@ namespace SparkLoad.Analyzer
         public long LoadsKept, LoadsFolded;                 // column.load spans listed one by one, and only counted
         public long HookSuppressed;                         // calls the hook did not emit (Stats column.load.suppressed)
         public int HookSuppressedColumns;
+        public bool HookSuppressedTimed;                    // Agg events carried total/max ms of the suppressed calls
+        public double HookSuppressedMs, HookSuppressedMaxMs;
     }
 
     internal sealed class Silence
@@ -375,6 +377,15 @@ namespace SparkLoad.Analyzer
             cr.UnknownLoad += (int)fold.Unk; cr.LoadUnkMs += fold.UnkMs;
             cr.HookSuppressedColumns = D.Ev.SuppressedByColumn.Count;
             foreach (var sv in D.Ev.SuppressedByColumn.Values) cr.HookSuppressed += sv;
+            if (D.Ev.SuppressedMsByColumn.Count > 0)
+            {
+                cr.HookSuppressedTimed = true;
+                foreach (var sm in D.Ev.SuppressedMsByColumn.Values)
+                {
+                    cr.HookSuppressedMs += sm.SumMs;
+                    if (sm.MaxMs > cr.HookSuppressedMaxMs) cr.HookSuppressedMaxMs = sm.MaxMs;
+                }
+            }
             if (pass.Count > 0)
             {
                 cr.DistinctColumns = pass.Select(s => (s.A, s.B)).Distinct().Count();
