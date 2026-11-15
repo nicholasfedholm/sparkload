@@ -214,6 +214,9 @@ namespace SparkLoad.Launch
         const int LimitFlagsOffset = 16;
         const int ProcessMemoryLimitOffset = 112;
 
+        /// <summary>Process memory limit only (no kill-on-close); used by the analyzer self-ceiling.</summary>
+        internal static bool SetJobMemoryLimit(IntPtr job, ulong processMemoryBytes) => SetJobLimits(job, false, processMemoryBytes);
+
         static bool SetJobLimits(IntPtr job, bool killOnClose, ulong processMemoryBytes)
         {
             IntPtr info = Marshal.AllocHGlobal(144);

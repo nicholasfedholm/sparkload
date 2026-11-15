@@ -375,6 +375,10 @@ namespace SparkLoad.Analyzer
         public long ExceptionCount;
         public readonly Dictionary<string, long> ExceptionTypes = new Dictionary<string, long>();
         public int AssemblyLoads;
+        /// <summary>Exception/loader events counted in step 1 without the sort (in Count).</summary>
+        public long CountedInStep1;
+        /// <summary>Step 1 statistics when the trace was streamed in this analysis (null when events.jsonl was read).</summary>
+        public ConvertStats? Step1;
         /// <summary>Every Begin/End event seen (also the folded column.load ones).</summary>
         public long MarkerEventCount;
         /// <summary>Begin events of the folded markers, by marker name (their Begins are not in Markers).</summary>
@@ -396,6 +400,16 @@ namespace SparkLoad.Analyzer
         public bool HasMarkers => MarkerEventCount > 0;
 
         public const string SuppressedPrefix = "column.load.suppressed ";
+
+        /// <summary>Memory caps for the per-event lists. Past a cap the analyzer keeps counting into an "other" bucket
+        /// (column.load: the fold totals; other markers: a dropped count) and the report says so. No fixture reaches them.</summary>
+        public const int RetainedLoadCap = 3_000_000;
+        public const int MarkerCap = 6_000_000;
+        /// <summary>column.load spans that qualified to stay individual but were folded because of RetainedLoadCap.</summary>
+        public long RetainedOverflow;
+        /// <summary>Non-column.load Begin/End events not kept because of MarkerCap (their spans are missing).</summary>
+        public long MarkersOverflow;
+        public bool Capped => RetainedOverflow > 0 || MarkersOverflow > 0;
 
         // Marker time signal for the silence scan. Events arrive in time order. When the previous-but-one point is
         // within SilenceGapMs of the new one, the previous point cannot start or end a silence, so it is replaced.
@@ -428,34 +442,74 @@ namespace SparkLoad.Analyzer
             sp.Open = false;
             sp.SeqE = seq;
             if (s.Length > 0 && sp.S.Length == 0) sp.S = s;
-            if (sp.Keep || sp.Dur >= LoadFold.SlowMs) ev.RetainedLoadSpans.Add(sp);
-            else ev.Fold.Add(sp);
+            if ((sp.Keep || sp.Dur >= LoadFold.SlowMs) && ev.RetainedLoadSpans.Count < RetainedLoadCap) ev.RetainedLoadSpans.Add(sp);
+            else
+            {
+                if (sp.Keep || sp.Dur >= LoadFold.SlowMs) ev.RetainedOverflow++;
+                ev.Fold.Add(sp);
+            }
         }
 
-        public static EventData Load(string eventsPath, string metaPath, TextWriter log)
+        /// <summary>
+        /// Step 2 as a fold over events in global time order, one event at a time. events.jsonl reading (tests, old
+        /// run folders) and the in-process trace stream both go through Line, so both give the same result.
+        /// </summary>
+        internal sealed class StreamFold
         {
-            var ev = new EventData();
-            if (!File.Exists(eventsPath)) return ev;
-            ev.FilePresent = true;
-            int bad = 0;
-            GcInfo? openGc = null;
-            double? openSuspend = null;
-            string suspendReason = "";
-            int order = 0;
-            int loadMarkerId = -1;
-            var loadStacks = new Dictionary<int, Stack<Span>>();
-            var loadSeen = new Dictionary<(long, long), int>();
-            using (var fs = new FileStream(eventsPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-            using (var sr = new StreamReader(fs))
+            private readonly EventData ev;
+            private GcInfo? openGc;
+            private double? openSuspend;
+            private string suspendReason = "";
+            private int order;
+            private int loadMarkerId = -1;
+            private readonly Dictionary<int, Stack<Span>> loadStacks = new Dictionary<int, Stack<Span>>();
+            private readonly Dictionary<(long, long), int> loadSeen = new Dictionary<(long, long), int>();
+            private int bad;
+            private bool finished;
+
+            public StreamFold(EventData target) { ev = target; }
+
+            public EventData Data => ev;
+
+            /// <summary>Marks the event stream as present (events.jsonl existed, or the trace merge started).</summary>
+            public void Start() { ev.FilePresent = true; }
+
+            public void Line(string line)
             {
-                string? line;
-                while ((line = sr.ReadLine()) != null)
+                if (line.Length == 0) return;
+                try
                 {
-                    if (line.Length == 0) continue;
-                    try
-                    {
-                        using var doc = JsonDocument.Parse(line);
-                        var r = doc.RootElement;
+                    using var doc = JsonDocument.Parse(line);
+                    Process(doc.RootElement);
+                }
+                catch (JsonException) { bad++; }
+            }
+
+            public void Line(ReadOnlyMemory<byte> utf8)
+            {
+                if (utf8.Length == 0) return;
+                try
+                {
+                    using var doc = JsonDocument.Parse(utf8);
+                    Process(doc.RootElement);
+                }
+                catch (JsonException) { bad++; }
+            }
+
+            /// <summary>Exception and loader events counted by step 1 without the sort (order-free in step 2).</summary>
+            public void AddCounted(long events, long exceptions, Dictionary<string, long> types, int loads, double maxT)
+            {
+                ev.Count += (int)events;
+                if (events > 0 && maxT > ev.MaxT) ev.MaxT = maxT;
+                ev.ExceptionCount += exceptions;
+                foreach (var kv in types)
+                    ev.ExceptionTypes[kv.Key] = ev.ExceptionTypes.TryGetValue(kv.Key, out long ec) ? ec + kv.Value : kv.Value;
+                ev.AssemblyLoads += loads;
+                ev.CountedInStep1 += events;
+            }
+
+            private void Process(JsonElement r)
+            {
                         double t = J.Dbl(r, "t_ms") ?? 0;
                         string src = J.Str(r, "src");
                         string name = J.Str(r, "name");
@@ -502,6 +556,7 @@ namespace SparkLoad.Analyzer
                                             FoldLoad(ev, loadStacks, loadSeen, isBegin, t, tid, seq, ma, mb, mc, ms);
                                             break;
                                         }
+                                        if (ev.Markers.Count >= MarkerCap) { ev.MarkersOverflow++; break; }
                                         ev.Markers.Add(new MarkerEv
                                         {
                                             T = t, Begin = isBegin, Marker = mk, MarkerId = mid, Tid = tid,
@@ -601,15 +656,18 @@ namespace SparkLoad.Analyzer
                             string et = J.Str(f, "type");
                             ev.ExceptionTypes[et] = ev.ExceptionTypes.TryGetValue(et, out long ec) ? ec + 1 : 1;
                         }
-                    }
-                    catch (JsonException) { bad++; }
-                }
             }
+
+            public void Finish(string metaPath, TextWriter log)
+            {
+                if (finished) return;
+                finished = true;
             // column.load spans still open at the end: kept ones stay open spans, the rest count with T1 = end of trace.
             foreach (var st in loadStacks.Values)
                 foreach (var s in st)
                 {
-                    if (s.Keep) { ev.RetainedLoadSpans.Add(s); continue; }
+                    if (s.Keep && ev.RetainedLoadSpans.Count < RetainedLoadCap) { ev.RetainedLoadSpans.Add(s); continue; }
+                    if (s.Keep) ev.RetainedOverflow++;
                     s.T1 = Math.Max(s.T0, ev.MaxT);
                     s.Open = false;
                     ev.Fold.Add(s);
@@ -622,7 +680,7 @@ namespace SparkLoad.Analyzer
                 var g = ev.Gcs.FirstOrDefault(x => x.T0 >= p.T0 - 1 && x.T0 <= p.T1 + 1);
                 if (g != null) p.Gen = g.Gen;
             }
-            if (bad > 0) log.WriteLine("analyzer: skipped " + bad + " malformed events.jsonl lines");
+                if (bad > 0) log.WriteLine("analyzer: skipped " + bad + " malformed events.jsonl lines");
             if (File.Exists(metaPath))
             {
                 try
@@ -634,6 +692,22 @@ namespace SparkLoad.Analyzer
                 }
                 catch (Exception) { }
             }
+            }
+        }
+
+        public static EventData Load(string eventsPath, string metaPath, TextWriter log)
+        {
+            var ev = new EventData();
+            if (!File.Exists(eventsPath)) return ev;
+            var fold = new StreamFold(ev);
+            fold.Start();
+            using (var fs = new FileStream(eventsPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (var sr = new StreamReader(fs))
+            {
+                string? line;
+                while ((line = sr.ReadLine()) != null) fold.Line(line);
+            }
+            fold.Finish(metaPath, log);
             return ev;
         }
     }
@@ -652,7 +726,10 @@ namespace SparkLoad.Analyzer
         public List<Span> Spans = new List<Span>();
         public double EndMs;
 
-        public static RunData Load(string runDir, TextWriter log, bool convertTrace)
+        public static RunData Load(string runDir, TextWriter log, bool convertTrace) => Load(runDir, log, convertTrace, false);
+
+        /// <summary>exportEvents: also write events.jsonl (off by default: step 2 reads the merged trace in process).</summary>
+        public static RunData Load(string runDir, TextWriter log, bool convertTrace, bool exportEvents)
         {
             var d = new RunData { Dir = runDir };
             string runJson = Path.Combine(runDir, "run.json");
@@ -664,12 +741,24 @@ namespace SparkLoad.Analyzer
             string nettrace = Path.Combine(runDir, "raw.nettrace");
             string events = Path.Combine(runDir, "events.jsonl");
             string meta = Path.Combine(runDir, "events.meta.json");
+            bool streamed = false;
             if (convertTrace && File.Exists(nettrace))
             {
-                try { TraceConverter.Convert(nettrace, d.Info, events, meta, log); }
-                catch (Exception ex) { log.WriteLine("analyzer: trace conversion failed: " + Txt.Clean(ex.Message)); }
+                var ev = new EventData();
+                var fold = new EventData.StreamFold(ev);
+                try
+                {
+                    ev.Step1 = TraceConverter.Convert(nettrace, d.Info, exportEvents ? events : null, meta, log, TraceConverter.MaxEventsPerRun, fold);
+                    fold.Finish(meta, log);
+                    d.Ev = ev;
+                    streamed = true;
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException)
+                {
+                    log.WriteLine("analyzer: trace conversion failed: " + Txt.Clean(ex.Message));
+                }
             }
-            d.Ev = EventData.Load(events, meta, log);
+            if (!streamed) d.Ev = EventData.Load(events, meta, log);
             d.Samples = SampleSet.Load(Path.Combine(runDir, "samples.csv"), log);
             d.LoadLogs(Path.Combine(runDir, "logtail.csv"), log);
             d.BuildSpans();

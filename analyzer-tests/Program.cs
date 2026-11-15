@@ -23,11 +23,66 @@ namespace SparkLoad.AnalyzerTests
             Console.WriteLine("FAIL: " + name + (detail != null ? " :: " + detail : ""));
         }
 
-        private static (int Exit, string Log) RunAnalyzer(string dir, string? cmp = null)
+        private static (int Exit, string Log) RunAnalyzer(string dir, string? cmp = null, bool exportEvents = false)
         {
             var sw = new StringWriter();
-            int rc = AnalyzerMain.Run(dir, cmp, sw);
+            int rc = AnalyzerMain.Run(dir, cmp, sw, new AnalyzerOptions { ExportEvents = exportEvents });
             return (rc, sw.ToString());
+        }
+
+        /// <summary>loading.md without the analyzer self-measurement section (wall time and memory differ per run).</summary>
+        private static string StripAnalyzer(string md)
+        {
+            int i = md.LastIndexOf("## Analyzer", StringComparison.Ordinal);
+            if (i < 0) return md;
+            int j = md.IndexOf("## ", i + 3, StringComparison.Ordinal);
+            return md.Substring(0, i) + (j < 0 ? "" : md.Substring(j));
+        }
+
+        private static string ReadOr(string path) => File.Exists(path) ? File.ReadAllText(path) : "<missing " + Path.GetFileName(path) + ">";
+
+        /// <summary>Same trace analyzed three ways: export (events.jsonl written), streamed (no events.jsonl, exception and
+        /// loader events counted without the sort) and from the exported events.jsonl alone. Outputs must be identical.</summary>
+        private static void Equivalence(string tag, string exportDir)
+        {
+            string sdir = exportDir + "-streamed", fdir = exportDir + "-fromjsonl";
+            foreach (var d in new[] { sdir, fdir })
+            {
+                Directory.CreateDirectory(d);
+                foreach (var f in Directory.GetFiles(d)) File.Delete(f);
+                File.Copy(Path.Combine(exportDir, "run.json"), Path.Combine(d, "run.json"));
+            }
+            File.Copy(Path.Combine(exportDir, "raw.nettrace"), Path.Combine(sdir, "raw.nettrace"));
+            File.Copy(Path.Combine(exportDir, "events.jsonl"), Path.Combine(fdir, "events.jsonl"));
+            File.Copy(Path.Combine(exportDir, "events.meta.json"), Path.Combine(fdir, "events.meta.json"));
+            var (rcs, logs) = RunAnalyzer(sdir);
+            Check(rcs == 0, tag + "streamed: analyzer exit 0", logs);
+            Check(!File.Exists(Path.Combine(sdir, "events.jsonl")), tag + "streamed: no events.jsonl written");
+            Check(!Directory.Exists(Path.Combine(sdir, "events.spill")), tag + "streamed: spill folder removed");
+            var (rcf, logf) = RunAnalyzer(fdir);
+            Check(rcf == 0, tag + "from events.jsonl: analyzer exit 0", logf);
+            string emd = StripAnalyzer(ReadOr(Path.Combine(exportDir, "loading.md"))), ecsv = ReadOr(Path.Combine(exportDir, "loading.csv"));
+            foreach (var (d, name) in new[] { (sdir, "streamed"), (fdir, "from events.jsonl") })
+            {
+                string md = StripAnalyzer(ReadOr(Path.Combine(d, "loading.md")));
+                Check(md == emd, tag + name + " loading.md equals the export run", FirstDiff(emd, md));
+                string csv = ReadOr(Path.Combine(d, "loading.csv"));
+                Check(csv == ecsv, tag + name + " loading.csv equals the export run", FirstDiff(ecsv, csv));
+            }
+            string smd = ReadOr(Path.Combine(sdir, "loading.md"));
+            Check(smd.Contains("## Analyzer") && smd.Contains("peak working set") && smd.Contains("events/s"), tag + "streamed: loading.md has the analyzer section");
+            Check(File.Exists(Path.Combine(sdir, "analyzer.json")) && ReadOr(Path.Combine(sdir, "analyzer.json")).Contains("\"peak_working_set_bytes\""), tag + "streamed: analyzer.json written");
+        }
+
+        private static string FirstDiff(string a, string b)
+        {
+            var la = a.Split((char)10); var lb = b.Split((char)10);
+            for (int i = 0; i < Math.Max(la.Length, lb.Length); i++)
+            {
+                string x = i < la.Length ? la[i] : "<eof>", y = i < lb.Length ? lb[i] : "<eof>";
+                if (x != y) return "line " + (i + 1) + ": [" + x.TrimEnd() + "] vs [" + y.TrimEnd() + "]";
+            }
+            return "";
         }
 
         private static string Gate(string md, string id)
@@ -296,7 +351,7 @@ namespace SparkLoad.AnalyzerTests
             File.WriteAllText(Path.Combine(dir, "run.json"),
                 "{\"run_id\":\"real-trace\",\"arm\":\"O\",\"mode\":\"default\",\"timing_void\":false,\"t0_qpc\":" + t0 + ",\"qpc_freq\":" + Stopwatch.Frequency +
                 ",\"g1_delta_ms\":3.5,\"end_ms\":60000,\"launcher_version\":\"test\"}");
-            var (rc, log) = RunAnalyzer(dir);
+            var (rc, log) = RunAnalyzer(dir, null, true);
             Check(rc == 0, "real: analyzer exit 0", log);
             string evPath = Path.Combine(dir, "events.jsonl");
             Check(File.Exists(evPath), "real: events.jsonl written");
@@ -346,6 +401,7 @@ namespace SparkLoad.AnalyzerTests
             Check(md.Contains("test-1.0") && md.Contains("hook: version"), "real: header shows hook version");
             NoDashes("real loading.md", Path.Combine(dir, "loading.md"));
             NoDashes("real events.jsonl", evPath);
+            Equivalence("real ", dir);
 
             // Truncated traces: cut the file at several points. The tail of a nettrace is mostly rundown data, so a cut
             // late in the file may lose no SparkLoad events; every cut must still analyze with exit 0 and a truncation flag,
@@ -360,7 +416,7 @@ namespace SparkLoad.AnalyzerTests
                 byte[] all = File.ReadAllBytes(nettrace);
                 File.WriteAllBytes(Path.Combine(tdir, "raw.nettrace"), all.Take((int)(all.Length * frac)).ToArray());
                 File.Copy(Path.Combine(dir, "run.json"), Path.Combine(tdir, "run.json"));
-                var (rct, logt) = RunAnalyzer(tdir);
+                var (rct, logt) = RunAnalyzer(tdir, null, true);
                 string tag = "trunc" + ((int)(frac * 100)).ToString(CultureInfo.InvariantCulture) + ": ";
                 Check(rct == 0, tag + "analyzer exit 0 on a truncated trace", logt);
                 string tev = Path.Combine(tdir, "events.jsonl");
@@ -373,6 +429,7 @@ namespace SparkLoad.AnalyzerTests
                 string tmd = File.Exists(Path.Combine(tdir, "loading.md")) ? File.ReadAllText(Path.Combine(tdir, "loading.md")) : "";
                 Check(tmd.Contains("TRUNCATED"), tag + "loading.md notes the truncation");
                 Check(File.Exists(Path.Combine(tdir, "loading.csv")), tag + "loading.csv written");
+                if (File.Exists(tev) && File.Exists(Path.Combine(tdir, "events.meta.json"))) Equivalence(tag, tdir);
                 counts.Add(((int)(frac * 100)).ToString(CultureInfo.InvariantCulture) + "%=" + tn);
             }
             Check(anyFewer, "trunc: an early cut loses events", string.Join(" ", counts));

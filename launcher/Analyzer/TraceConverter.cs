@@ -16,6 +16,18 @@ namespace SparkLoad.Analyzer
     /// Step 1: raw.nettrace to events.jsonl. SparkLoad events through the dynamic parser, GC, loader and
     /// exception events through ClrTraceEventParser. A truncated trace writes what was read and sets a note.
     /// </summary>
+    /// <summary>Step 1 statistics for the analyzer report.</summary>
+    internal sealed class ConvertStats
+    {
+        public long TraceEvents;   // events read from the trace (SparkLoad, GC, loader, exception)
+        public long Committed;     // events handed to step 2 (sorted or counted)
+        public long Bypassed;      // exception/loader events counted without the sort
+        public long Dropped;       // runtime-time events dropped (no time offset)
+        public long SpillBytes;    // temporary sorted-run bytes written (deleted after the merge)
+        public int SpillRuns;
+        public bool Truncated;
+    }
+
     internal static class TraceConverter
     {
         private sealed class Raw
@@ -54,11 +66,27 @@ namespace SparkLoad.Analyzer
 
         public static void Convert(string nettracePath, RunInfo run, string eventsPath, string metaPath, TextWriter log)
         {
-            Convert(nettracePath, run, eventsPath, metaPath, log, MaxEventsPerRun);
+            Convert(nettracePath, run, eventsPath, metaPath, log, MaxEventsPerRun, null);
         }
 
         internal static void Convert(string nettracePath, RunInfo run, string eventsPath, string metaPath, TextWriter log, int maxEventsPerRun)
         {
+            Convert(nettracePath, run, eventsPath, metaPath, log, maxEventsPerRun, null);
+        }
+
+        /// <summary>
+        /// Step 1. With fold set, every merged event goes straight into the step 2 fold (same bytes as an events.jsonl
+        /// line, so the result is identical by construction); eventsPath may then be null (no events.jsonl written).
+        /// When no events.jsonl is written, exception and loader events (order-free counts in step 2, 97% of some
+        /// traces) are counted here and never spilled. Returns the step 1 statistics.
+        /// </summary>
+        internal static ConvertStats Convert(string nettracePath, RunInfo run, string? eventsPath, string metaPath, TextWriter log, int maxEventsPerRun, EventData.StreamFold? fold)
+        {
+            var stats = new ConvertStats();
+            bool bypass = fold != null && eventsPath == null;
+            long bypassCount = 0, bypassExc = 0, bypassLoads = 0;
+            double bypassMaxRel = double.NegativeInfinity;
+            var bypassTypes = new Dictionary<string, long>(StringComparer.Ordinal);
             bool truncated = false;
             string note = "";
             int order = 0;
@@ -80,7 +108,7 @@ namespace SparkLoad.Analyzer
             long count = 0;
             long eventsLost = -1;
 
-            string spillDir = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(eventsPath)) ?? ".", "events.spill");
+            string spillDir = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(eventsPath ?? metaPath)) ?? ".", "events.spill");
             using var spill = new Spill(spillDir, maxEventsPerRun);
             var opts = new JsonWriterOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping, Indented = false };
             using var scratch = new MemoryStream();
@@ -104,6 +132,22 @@ namespace SparkLoad.Analyzer
                     double o = r.T - r.Rel;
                     if (offset == null || o > offset.Value) offset = o;
                     if (r.Name == "Hello") sawHello = true;
+                }
+                if (bypass && !r.HasT && (r.Src == "exception" || r.Src == "loader"))
+                {
+                    // Same values step 2 would read back from the JSON line: Txt.Clean'ed string, null as "".
+                    bypassCount++;
+                    if (r.Rel > bypassMaxRel) bypassMaxRel = r.Rel;
+                    if (r.Src == "loader") { if (r.Name == "AssemblyLoad") bypassLoads++; }
+                    else
+                    {
+                        bypassExc++;
+                        object? tv = null;
+                        foreach (var kv in r.F) if (kv.Key == "type") { tv = kv.Value; break; }
+                        string et = tv == null ? "" : Txt.Clean(tv as string ?? tv.ToString() ?? "");
+                        bypassTypes[et] = bypassTypes.TryGetValue(et, out long bc) ? bc + 1 : 1;
+                    }
+                    return;
                 }
                 // body of the JSON object without its braces: "src":..,"name":..,"fields":{..}
                 scratch.SetLength(0);
@@ -170,7 +214,7 @@ namespace SparkLoad.Analyzer
             {
                 throw new IOException("step 1 spill failed: " + sx.InnerException?.Message, sx.InnerException);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 truncated = true;
                 note = "trace read stopped early: " + ex.GetType().Name + ": " + Txt.Clean(Txt.Cut(ex.Message, 200));
@@ -191,7 +235,7 @@ namespace SparkLoad.Analyzer
                 offsetSrc = "filetime";
             }
             long dropped = 0;
-            if (!offset.HasValue) dropped = spill.CountRel; // runtime-time events without a time offset
+            if (!offset.HasValue) dropped = spill.CountRel + bypassCount; // runtime-time events without a time offset
             double off = offset ?? 0;
 
             long written = 0;
@@ -199,7 +243,8 @@ namespace SparkLoad.Analyzer
             int spilledRuns = spill.RunsWritten;
             try
             {
-                using var os = new FileStream(eventsPath, FileMode.Create, FileAccess.Write, FileShare.Read, 1 << 20);
+                using var os = eventsPath == null ? null : new FileStream(eventsPath, FileMode.Create, FileAccess.Write, FileShare.Read, 1 << 20);
+                fold?.Start();
                 var heap = new RunHeap(runs.Count);
                 foreach (var rn in runs)
                     if (rn.Advance(off)) heap.Push(rn);
@@ -218,7 +263,8 @@ namespace SparkLoad.Analyzer
                     ms.Write(rn.Buf, rn.Off, rn.Len);
                     ms.WriteByte((byte)'}');
                     ms.WriteByte((byte)'\n');
-                    os.Write(ms.GetBuffer(), 0, (int)ms.Length);
+                    os?.Write(ms.GetBuffer(), 0, (int)ms.Length);
+                    fold?.Line(new ReadOnlyMemory<byte>(ms.GetBuffer(), 0, (int)ms.Length - 1));
                     written++;
                     if (rn.Advance(off)) heap.SiftTop();
                     else { heap.Pop(); rn.Dispose(); }
@@ -228,7 +274,19 @@ namespace SparkLoad.Analyzer
             {
                 foreach (var rn in runs) rn.Dispose();
             }
+            stats.SpillBytes = spill.BytesWritten;
+            stats.SpillRuns = spilledRuns;
             spill.DeleteFiles();
+            if (bypass && offset.HasValue && bypassCount > 0)
+            {
+                written += bypassCount;
+                fold!.AddCounted(bypassCount, bypassExc, bypassTypes, (int)bypassLoads, Math.Round(bypassMaxRel + off, 3));
+            }
+            stats.TraceEvents = count;
+            stats.Committed = written;
+            stats.Bypassed = bypass && offset.HasValue ? bypassCount : 0;
+            stats.Dropped = dropped;
+            stats.Truncated = truncated;
             if (dropped > 0) note += (note.Length > 0 ? "; " : "") + dropped + " events dropped (no time offset)";
 
             using (var mf = new FileStream(metaPath, FileMode.Create, FileAccess.Write, FileShare.Read))
@@ -241,9 +299,16 @@ namespace SparkLoad.Analyzer
                 w.WriteNumber("trace_bytes", traceBytes);
                 if (eventsLost >= 0) w.WriteNumber("eventpipe_events_lost", eventsLost);
                 w.WriteString("offset_source", offsetSrc);
+                w.WriteBoolean("events_jsonl_written", eventsPath != null);
+                w.WriteNumber("trace_events_read", count);
+                w.WriteNumber("counted_without_sort", stats.Bypassed);
+                w.WriteNumber("spill_bytes", stats.SpillBytes);
+                w.WriteNumber("spill_runs", stats.SpillRuns);
                 w.WriteEndObject();
             }
-            log.WriteLine("analyzer: step 1 wrote " + written + " events to events.jsonl (offset " + offsetSrc + (truncated ? ", TRUNCATED trace" : "") + ", " + spilledRuns + " spilled run files)");
+            log.WriteLine("analyzer: step 1 " + (eventsPath == null ? "streamed " : "wrote ") + written + " events" + (eventsPath == null ? "" : " to events.jsonl") + " (offset " + offsetSrc + (truncated ? ", TRUNCATED trace" : "") + ", " + spilledRuns + " spilled run files, "
+                + stats.Bypassed + " counted without sorting)");
+            return stats;
         }
 
         private sealed class SpillException : Exception
@@ -449,6 +514,7 @@ namespace SparkLoad.Analyzer
             readonly List<Item> _rel = new List<Item>();   // runtime-time events: key = Rel
             readonly List<(string Path, bool Rel)> _files = new List<(string, bool)>();
             public long CountRel;
+            public long BytesWritten;
             public int RunsWritten => _files.Count;
 
             public Spill(string dir, int maxEvents) { _dir = dir; _max = Math.Max(1, maxEvents); }
@@ -485,6 +551,8 @@ namespace SparkLoad.Analyzer
                         bw.Write(it.Len);
                         bw.Write(buf, it.Off, it.Len);
                     }
+                    bw.Flush();
+                    BytesWritten += fs.Length;
                 }
                 _files.Add((path, rel));
                 items.Clear();

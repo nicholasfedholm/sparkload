@@ -71,18 +71,28 @@ namespace SparkLoad
         static int CmdAnalyze(string[] args)
         {
             string? run = null, compare = null;
+            var opts = new SparkLoad.Analyzer.AnalyzerOptions { MaxAnalyzerMb = AnalyzerGuard.DefaultMb };
             for (int i = 1; i < args.Length; i++)
             {
                 if (args[i] == "--run" && i + 1 < args.Length) run = args[++i];
                 else if (args[i] == "--compare" && i + 1 < args.Length) compare = args[++i];
+                else if (args[i] == "--events-jsonl") opts.ExportEvents = true;
+                else if (args[i] == "--max-analyzer-mb" && i + 1 < args.Length && long.TryParse(args[i + 1], out long mb) && mb >= 0) { opts.MaxAnalyzerMb = mb; i++; }
                 else { Err("sparkload analyze: unknown option " + args[i]); return 2; }
             }
             if (run == null) { Err("sparkload analyze: --run is required"); return 2; }
             if (!Directory.Exists(run)) { Err("sparkload analyze: run folder not found"); return 2; }
+            Console.Out.WriteLine("analyzer: " + AnalyzerGuard.Arm(opts.MaxAnalyzerMb));
             try
             {
-                int rc = SparkLoad.Analyzer.AnalyzerMain.Run(Path.GetFullPath(run), compare == null ? null : Path.GetFullPath(compare), Console.Out);
+                int rc = SparkLoad.Analyzer.AnalyzerMain.Run(Path.GetFullPath(run), compare == null ? null : Path.GetFullPath(compare), Console.Out, opts);
+                AnalyzerGuard.Disarm();
                 return rc == 0 ? 0 : 6;
+            }
+            catch (OutOfMemoryException)
+            {
+                AnalyzerGuard.Fail("an allocation failed at the job memory limit of --max-analyzer-mb " + opts.MaxAnalyzerMb);
+                return AnalyzerGuard.ExitCeiling;
             }
             catch (Exception ex)
             {
